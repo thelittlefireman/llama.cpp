@@ -362,6 +362,49 @@ static bool blackwell_mma_available(const int cc) {
            ggml_cuda_highest_compiled_arch(cc) < GGML_CUDA_CC_RUBIN;
 }
 
+#ifdef GGML_USE_HIP
+template <int dpp_ctrl, typename T, int row_mask = 0xf, int bank_mask = 0xf, bool bound_ctrl = true>
+static __device__ __forceinline__ T hip_move_dpp(T old, T v) {
+    return __builtin_bit_cast(
+        T,
+        __builtin_amdgcn_update_dpp(
+            __builtin_bit_cast(int, old),
+            __builtin_bit_cast(int, v),
+            dpp_ctrl,
+            row_mask,
+            bank_mask,
+            bound_ctrl
+        )
+    );
+}
+
+template <int mask, typename T>
+static __device__ __forceinline__ T hip_ds_swizzle(T v) {
+    return __builtin_bit_cast(T, __builtin_amdgcn_ds_swizzle(__builtin_bit_cast(int, v), mask));
+}
+#endif // GGML_USE_HIP
+
+template<int width = WARP_SIZE, typename T>
+static __device__ __forceinline__ T ggml_cuda_shfl_xor_sync(T x, int offset) {
+#if defined(GGML_USE_HIP)
+    static T old;
+
+    // clang (v20) will not unroll loops with just the plain `offset` in switch
+    switch (~offset) {
+        // subgroups (width) should not make a difference for a butterfly shuffle pattern
+        case ~1: return hip_move_dpp<0x160 + 1>(old, x);  // row_xor_mask: offset
+        case ~2: return hip_move_dpp<0x160 + 2>(old, x);
+        case ~4: return hip_move_dpp<0x160 + 4>(old, x);
+        case ~8: return hip_move_dpp<0x160 + 8>(old, x);
+        case ~16: return hip_ds_swizzle<0x401f>(x);  // swap neighboring groups of 16
+        default: return __shfl_xor(x, offset, width);
+    }
+#else
+    return __shfl_xor_sync(0xffffffff, x, offset, width);
+#endif // GGML_USE_HIP
+}
+
+
 static constexpr __device__ int ggml_cuda_get_physical_warp_size() {
 #if defined(GGML_USE_HIP) && (defined(__GFX9__) || defined(__GFX8__))
     return 64;
@@ -437,7 +480,7 @@ static __device__ __forceinline__ int warp_reduce_sum(int x) {
 #else
 #pragma unroll
     for (int offset = width/2; offset > 0; offset >>= 1) {
-        x += __shfl_xor_sync(0xffffffff, x, offset, width);
+        x += ggml_cuda_shfl_xor_sync<width>(x, offset);
     }
     return x;
 #endif // !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_AMPERE
@@ -447,7 +490,7 @@ template<int width = WARP_SIZE>
 static __device__ __forceinline__ float warp_reduce_sum(float x) {
 #pragma unroll
     for (int offset = width/2; offset > 0; offset >>= 1) {
-        x += __shfl_xor_sync(0xffffffff, x, offset, width);
+        x += ggml_cuda_shfl_xor_sync<width>(x, offset);
     }
     return x;
 }
@@ -456,8 +499,8 @@ template<int width = WARP_SIZE>
 static __device__ __forceinline__ float2 warp_reduce_sum(float2 a) {
 #pragma unroll
     for (int offset = width/2; offset > 0; offset >>= 1) {
-        a.x += __shfl_xor_sync(0xffffffff, a.x, offset, width);
-        a.y += __shfl_xor_sync(0xffffffff, a.y, offset, width);
+        a.x += ggml_cuda_shfl_xor_sync<width>(a.x, offset);
+        a.y += ggml_cuda_shfl_xor_sync<width>(a.y, offset);
     }
     return a;
 }
@@ -467,7 +510,7 @@ static __device__ __forceinline__ half2 warp_reduce_sum(half2 a) {
 #ifdef FP16_AVAILABLE
 #pragma unroll
     for (int offset = width/2; offset > 0; offset >>= 1) {
-        a = __hadd2(a, __shfl_xor_sync(0xffffffff, a, offset, width));
+        a = __hadd2(a, ggml_cuda_shfl_xor_sync<width>(a, offset));
     }
     return a;
 
@@ -484,7 +527,7 @@ static __device__ __forceinline__ int warp_reduce_all(int x) {
     } else {
 #pragma unroll
         for (int offset = width/2; offset > 0; offset >>= 1) {
-            x = __shfl_xor_sync(0xffffffff, x, offset, width) && x;
+            x = ggml_cuda_shfl_xor_sync<width>(x, offset) && x;
         }
         return x;
     }
@@ -497,7 +540,7 @@ static __device__ __forceinline__ int warp_reduce_any(int x) {
     } else {
 #pragma unroll
         for (int offset = width/2; offset > 0; offset >>= 1) {
-            x = __shfl_xor_sync(0xffffffff, x, offset, width) || x;
+            x = ggml_cuda_shfl_xor_sync<width>(x, offset) || x;
         }
         return x;
     }
@@ -507,7 +550,7 @@ template<int width = WARP_SIZE>
 static __device__ __forceinline__ float warp_reduce_max(float x) {
 #pragma unroll
     for (int offset = width/2; offset > 0; offset >>= 1) {
-        x = fmaxf(x, __shfl_xor_sync(0xffffffff, x, offset, width));
+        x = fmaxf(x, ggml_cuda_shfl_xor_sync<width>(x, offset));
     }
     return x;
 }
@@ -673,7 +716,7 @@ static __device__ __forceinline__ half2 warp_reduce_max(half2 x) {
 #if !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_PASCAL || defined(GGML_USE_HIP)
 #pragma unroll
    for (int offset = width/2; offset > 0; offset >>= 1) {
-       x = ggml_cuda_hmax2(x, __shfl_xor_sync(0xffffffff, x, offset, width));
+       x = ggml_cuda_hmax2(x, ggml_cuda_shfl_xor_sync<width>(x, offset));
    }
    return x;
 #else
