@@ -386,7 +386,19 @@ static __device__ __forceinline__ T hip_ds_swizzle(T v) {
 
 template<int width = WARP_SIZE, typename T>
 static __device__ __forceinline__ T ggml_cuda_shfl_xor_sync(T x, int offset) {
+
 #if defined(GGML_USE_HIP)
+ #if defined(GCN)
+ static T old;
+
+    // clang (v20) will not unroll loops with just the plain `offset` in switch
+    switch (~offset) {
+        // subgroups (width) should not make a difference for a butterfly shuffle pattern
+        case ~1: return hip_move_dpp<0xB1>(old, x);  // row_xor_mask: offset
+        case ~2: return hip_move_dpp<0x4E>(old, x);
+        default: return __shfl_xor(x, offset, width);
+    }
+ #else
     static T old;
 
     // clang (v20) will not unroll loops with just the plain `offset` in switch
@@ -399,6 +411,7 @@ static __device__ __forceinline__ T ggml_cuda_shfl_xor_sync(T x, int offset) {
         case ~16: return hip_ds_swizzle<0x401f>(x);  // swap neighboring groups of 16
         default: return __shfl_xor(x, offset, width);
     }
+ #endif // GCN
 #else
     return __shfl_xor_sync(0xffffffff, x, offset, width);
 #endif // GGML_USE_HIP
