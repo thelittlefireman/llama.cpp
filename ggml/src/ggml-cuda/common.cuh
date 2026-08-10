@@ -500,6 +500,13 @@ template<int width = WARP_SIZE>
 static __device__ __forceinline__ int warp_reduce_sum(int x) {
 #if !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_AMPERE
     return __reduce_add_sync(0xffffffff, x);
+#elif defined(GGML_USE_HIP) && \
+    __has_builtin(__builtin_amdgcn_wave_reduce_add_u32)
+
+    if constexpr (width == ggml_cuda_get_physical_warp_size()) {
+        return (int) __builtin_amdgcn_wave_reduce_add_u32(
+            (uint32_t) x, 2);
+    }
 #else
 #pragma unroll
     for (int offset = width/2; offset > 0; offset >>= 1) {
@@ -511,6 +518,12 @@ static __device__ __forceinline__ int warp_reduce_sum(int x) {
 
 template<int width = WARP_SIZE>
 static __device__ __forceinline__ float warp_reduce_sum(float x) {
+#if defined(GGML_USE_HIP) && \
+    __has_builtin(__builtin_amdgcn_wave_reduce_fadd_f32)
+    if constexpr (width == ggml_cuda_get_physical_warp_size()) {
+        return __builtin_amdgcn_wave_reduce_fadd_f32(x, 2);  // 2 = DPP strategy
+    }
+#endif
 #pragma unroll
     for (int offset = width/2; offset > 0; offset >>= 1) {
         x += ggml_cuda_shfl_xor_sync<width>(x, offset);
@@ -571,6 +584,14 @@ static __device__ __forceinline__ int warp_reduce_any(int x) {
 
 template<int width = WARP_SIZE>
 static __device__ __forceinline__ float warp_reduce_max(float x) {
+#if defined(GGML_USE_HIP) && \
+    __has_builtin(__builtin_amdgcn_wave_reduce_fmax_f32)
+
+    if constexpr (width == ggml_cuda_get_physical_warp_size()) {
+        return __builtin_amdgcn_wave_reduce_fmax_f32(x, 2);
+    }
+
+#endif
 #pragma unroll
     for (int offset = width/2; offset > 0; offset >>= 1) {
         x = fmaxf(x, ggml_cuda_shfl_xor_sync<width>(x, offset));
