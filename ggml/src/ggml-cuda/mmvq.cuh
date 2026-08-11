@@ -1,5 +1,16 @@
 #include "common.cuh"
 
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+#if __has_builtin(__builtin_amdgcn_wave_reduce_fadd_f32)
+// gfx906 is wave64 and supports DPP. Prefer LLVM's native wave reduction over
+// the generic six-step shuffle/XOR reduction used by warp_reduce_sum<64>().
+template <>
+__device__ __forceinline__ float warp_reduce_sum<64>(float x) {
+    return __builtin_amdgcn_wave_reduce_fadd_f32(x, 2); // 2 = DPP strategy
+}
+#endif
+#endif
+
 #define MMVQ_MAX_BATCH_SIZE 8 // Max. batch size for which to use MMVQ kernels.
 
 bool ggml_cuda_should_use_mmvq(enum ggml_type type, int cc, int64_t ne11);
