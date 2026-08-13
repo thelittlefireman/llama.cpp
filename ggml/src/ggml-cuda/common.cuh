@@ -373,11 +373,11 @@ static bool ggml_cuda_is_aligned(const ggml_tensor * tensor, const size_t alignm
 
 #ifdef GGML_USE_HIP
 template <int dpp_ctrl, typename T, int row_mask = 0xf, int bank_mask = 0xf, bool bound_ctrl = true>
-static __device__ __forceinline__ T hip_move_dpp(T old, T v) {
+static __device__ __forceinline__ T hip_move_dpp(T v) {
     return __builtin_bit_cast(
         T,
         __builtin_amdgcn_update_dpp(
-            __builtin_bit_cast(int, old),
+            0,
             __builtin_bit_cast(int, v),
             dpp_ctrl,
             row_mask,
@@ -398,26 +398,24 @@ static __device__ __forceinline__ T ggml_cuda_shfl_xor_sync(T x, int offset) {
 
 #if defined(GGML_USE_HIP)
  #if defined(__GFX9__)
- static T old;
     // clang (v20) will not unroll loops with just the plain `offset` in switch
     switch (~offset) {
         // subgroups (width) should not make a difference for a butterfly shuffle pattern
-        case ~1: return hip_move_dpp<0xB1>(old, x);   // quad_perm:[1,0,3,2]
-        case ~2: return hip_move_dpp<0x4E>(old, x);   // quad_perm:[2,3,0,1]
+        case ~1: return hip_move_dpp<0xB1>(x);   // quad_perm:[1,0,3,2]
+        case ~2: return hip_move_dpp<0x4E>(x);   // quad_perm:[2,3,0,1]
         case ~4: return hip_ds_swizzle<0x101F>(x);    // ds_swizzle AND mask = 0x1F; OR mask  = 0; XOR mask = 4
-        case ~8: return hip_move_dpp<0x128>(old, x);  // row_ror:8
+        case ~8: return hip_move_dpp<0x128>(x);  // row_ror:8
         case ~16: return hip_ds_swizzle<0x401f>(x);  // swap neighboring groups of 16
         default: return __shfl_xor(x, offset, width);
     }
  #else
-    static T old;
     // clang (v20) will not unroll loops with just the plain `offset` in switch
     switch (~offset) {
         // subgroups (width) should not make a difference for a butterfly shuffle pattern
-        case ~1: return hip_move_dpp<0x160 + 1>(old, x);  // row_xor_mask: offset
-        case ~2: return hip_move_dpp<0x160 + 2>(old, x);
-        case ~4: return hip_move_dpp<0x160 + 4>(old, x);
-        case ~8: return hip_move_dpp<0x160 + 8>(old, x);
+        case ~1: return hip_move_dpp<0x160 + 1>(x);  // row_xor_mask: offset
+        case ~2: return hip_move_dpp<0x160 + 2>(x);
+        case ~4: return hip_move_dpp<0x160 + 4>(x);
+        case ~8: return hip_move_dpp<0x160 + 8>(x);
         case ~16: return hip_ds_swizzle<0x401f>(x);  // swap neighboring groups of 16
         default: return __shfl_xor(x, offset, width);
     }
@@ -503,7 +501,7 @@ static __device__ __forceinline__ int warp_reduce_sum(int x) {
 #endif // !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_AMPERE
 #if defined(GGML_USE_HIP)
     if constexpr (width == ggml_cuda_get_physical_warp_size()) {
-        return (int) __builtin_amdgcn_wave_reduce_add_u32((uint32_t) x, 2);
+        return (int) __builtin_amdgcn_wave_reduce_add_u32((uint32_t) x, 0);
     }
 #endif // defined(GGML_USE_HIP)
 #pragma unroll
@@ -517,7 +515,7 @@ template<int width = WARP_SIZE>
 static __device__ __forceinline__ float warp_reduce_sum(float x) {
 #if defined(GGML_USE_HIP)
     if constexpr (width == ggml_cuda_get_physical_warp_size()) {
-        return __builtin_amdgcn_wave_reduce_fadd_f32(x, 2);  // 2 = DPP strategy
+        return __builtin_amdgcn_wave_reduce_fadd_f32(x, 0);  // 0 = auto strategy
     }
 #endif // defined(GGML_USE_HIP)
 #pragma unroll
@@ -582,7 +580,7 @@ template<int width = WARP_SIZE>
 static __device__ __forceinline__ float warp_reduce_max(float x) {
 #if defined(GGML_USE_HIP)
     if constexpr (width == ggml_cuda_get_physical_warp_size()) {
-        return __builtin_amdgcn_wave_reduce_fmax_f32(x, 2);
+        return __builtin_amdgcn_wave_reduce_fmax_f32(x, 0);
     }
 #endif // defined(GGML_USE_HIP)
 #pragma unroll
