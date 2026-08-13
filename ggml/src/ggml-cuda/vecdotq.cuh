@@ -150,9 +150,13 @@ static __device__ __forceinline__ uint32_t unpack_ksigns(const uint8_t v) {
 #endif
 }
 
-static __device__ __forceinline__ int iq2_apply_sign_swar(const int grid_pos, const int signs) {
+static __device__ __forceinline__ int iq3_apply_sign(const int grid_pos, const int signs) {
+#if defined(GGML_USE_HIP)
     const uint32_t s = (uint32_t) signs;
     return (int) (((uint32_t) grid_pos ^ s) + (s & 0x01010101u));
+#else
+    return __vsub4(grid_pos ^ signs, signs);
+#endif
 }
 
 static __device__ __forceinline__ int iq2_apply_sign(
@@ -1300,12 +1304,12 @@ static __device__ __forceinline__ float vec_dot_iq3_xxs_q8_1(
         const uint32_t signs = unpack_ksigns(aux32 >> (7*l0/2));
 
         const int signs0 = __vcmpne4(signs & 0x08040201, 0);
-        const int grid_l = __vsub4(grid_pos.x ^ signs0, signs0);
+        const int grid_l = iq3_apply_sign(grid_pos.x ^ signs0, signs0);
 
         const int u0 = get_int_b4(bq8_1[iqs/2].qs, l0 + 0);
 
         const int signs1 = __vcmpne4(signs & 0x80402010, 0);
-        const int grid_h = __vsub4(grid_pos.y ^ signs1, signs1);
+        const int grid_h = iq3_apply_sign(grid_pos.y ^ signs1, signs1);
 
         const int u1 = get_int_b4(bq8_1[iqs/2].qs, l0 + 1);
 
@@ -1346,8 +1350,8 @@ static __device__ __forceinline__ float vec_dot_iq3_s_q8_1(
         const int signs0 = __vcmpne4(((signs_packed_8[l0/2] & 0x03) << 7) | ((signs_packed_8[l0/2] & 0x0C) << 21), 0x00000000);
         const int signs1 = __vcmpne4(((signs_packed_8[l0/2] & 0x30) << 3) | ((signs_packed_8[l0/2] & 0xC0) << 17), 0x00000000);
 
-        const int grid_l = __vsub4(grid_pos.x ^ signs0, signs0);
-        const int grid_h = __vsub4(grid_pos.y ^ signs1, signs1);
+        const int grid_l = iq3_apply_sign(grid_pos.x ^ signs0, signs0);
+        const int grid_h = iq3_apply_sign(grid_pos.y ^ signs1, signs1);
 
         const int u0 = get_int_b4(bq8_1[iqs/2].qs, l0 + 0);
         const int u1 = get_int_b4(bq8_1[iqs/2].qs, l0 + 1);

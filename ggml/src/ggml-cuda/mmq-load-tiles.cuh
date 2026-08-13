@@ -1095,7 +1095,10 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
     constexpr int nrows = warp_size / threads_per_row;
     const int kqsx = warp_size > threads_per_row ? threadIdx.x % threads_per_row : threadIdx.x;
 
-#pragma unroll
+#if !defined(GGML_USE_HIP)
+    // on HIP __builtin_amdgcn_perm need more VGRP registers, avoid spill by do not unroll the first loop
+    #pragma unroll
+#endif
     for (int i0 = 0; i0 < I; i0 += nwarps * nrows) {
         int i = i0 + threadIdx.y*nrows + threadIdx.x/threads_per_row;
 
@@ -1109,27 +1112,26 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
         const uint8_t * aux8 = (const uint8_t *) &q2;
         const uint32_t aux32 = get_int_b2(bxi->qs, 2*kqsx+1);
 
+#if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+        constexpr int x_qs_stride = sram_stride;
+#else
+        constexpr int x_qs_stride = 2*MMQ_TILE_NE_K + 1;
+#endif
+
+        int * x_qs_i = x_qs + i*x_qs_stride + 8*kqsx;
+
 #pragma unroll
         for (int l = 0; l < QR2_XXS; ++l) {
             const uint2 grid_pos = ((const uint2*)iq2xxs_grid)[aux8[l]];
             const uint32_t signs = unpack_ksigns(aux32 >> (7 * l));
 
             const int signs0 = __vcmpne4(signs & 0x08040201, 0);
-            const int grid0  = iq2_apply_sign_swar(grid_pos.x, signs0);
-#if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
-            x_qs[i*sram_stride + 8*kqsx + (2*l + 0)] = grid0;
-#else
-            x_qs[i*(2*MMQ_TILE_NE_K + 1) + 8*kqsx + (2*l + 0)] = grid0;
-#endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+            const int grid0  = iq2_apply_sign(grid_pos.x, signs0);
+            x_qs_i[2*l + 0] = grid0;
 
             const int signs1 = __vcmpne4(signs & 0x80402010, 0);
-            const int grid1  = iq2_apply_sign_swar(grid_pos.y, signs1);
-
-#if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
-            x_qs[i*sram_stride + 8*kqsx + (2*l + 1)] = grid1;
-#else
-            x_qs[i*(2*MMQ_TILE_NE_K + 1) + 8*kqsx + (2*l + 1)] = grid1;
-#endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+            const int grid1  = iq2_apply_sign(grid_pos.y, signs1);
+            x_qs_i[2*l + 1] = grid1;
         }
 
         const int ls = aux32 >> 27 | 1; // (scale * 2 + 1)
@@ -1162,7 +1164,10 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
     constexpr int nrows = warp_size / threads_per_row;
     const int kqsx = threadIdx.x % threads_per_row;
 
-#pragma unroll
+#if !defined(GGML_USE_HIP)
+    // on HIP __builtin_amdgcn_perm need more VGRP registers, avoid spill by do not unroll the first loop
+    #pragma unroll
+#endif
     for (int i0 = 0; i0 < I; i0 += nwarps * nrows) {
         int i = i0 + threadIdx.y*nrows + threadIdx.x/threads_per_row;
 
@@ -1175,28 +1180,26 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
         const int2 q2_packed = make_int2(get_int_b2(bxi->qs, 2*kqsx+0), get_int_b2(bxi->qs, 2*kqsx+1));
         const uint16_t * q2 = (const uint16_t *) &q2_packed;
 
+#if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+        constexpr int x_qs_stride = sram_stride;
+#else
+        constexpr int x_qs_stride = 2*MMQ_TILE_NE_K + 1;
+#endif
+
+        int * x_qs_i = x_qs + i*x_qs_stride + 8*kqsx;
+
     #pragma unroll
         for (int l = 0; l < QR2_XS; ++l) {
             const uint2 grid_pos = ((const uint2*)iq2xs_grid)[q2[l] & 0x1FF];
             const uint32_t signs = unpack_ksigns(q2[l] >> 9);
 
             const int signs0 = __vcmpne4(signs & 0x08040201, 0);
-            const int grid_l = iq2_apply_sign_swar(grid_pos.x, signs0);
-
-#if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
-            x_qs[i*sram_stride + 8*kqsx + (2*l + 0)] = grid_l;
-#else
-            x_qs[i*(2*MMQ_TILE_NE_K + 1) + 8*kqsx + (2*l + 0)] = grid_l;
-#endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+            const int grid_l = iq2_apply_sign(grid_pos.x, signs0);
+            x_qs_i[2*l + 0] = grid_l;
 
             const int signs1 = __vcmpne4(signs & 0x80402010, 0);
-            const int grid_h = iq2_apply_sign_swar(grid_pos.y, signs1);
-
-#if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
-            x_qs[i*sram_stride + 8*kqsx + (2*l + 1)] = grid_h;
-#else
-            x_qs[i*(2*MMQ_TILE_NE_K + 1) + 8*kqsx + (2*l + 1)] = grid_h;
-#endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+            const int grid_h = iq2_apply_sign(grid_pos.y, signs1);
+            x_qs_i[2*l + 1] = grid_h;
         }
 
         const int ls = bxi->scales[kqsx];
@@ -1230,7 +1233,10 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
     constexpr int nrows = warp_size / threads_per_row;
     const int kqsx = threadIdx.x % threads_per_row;
 
-#pragma unroll
+#if !defined(GGML_USE_HIP)
+    // on HIP __builtin_amdgcn_perm need more VGRP registers, avoid spill by do not unroll the first loop
+    #pragma unroll
+#endif
     for (int i0 = 0; i0 < I; i0 += nwarps * nrows) {
         int i = i0 + threadIdx.y*nrows + threadIdx.x/threads_per_row;
 
@@ -1248,25 +1254,25 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
         const int       signs_packed_32 = get_int_b2(bxi->qs, QK_K/32 + kqsx);
         const uint8_t * signs_packed_8  = (const uint8_t *) &signs_packed_32;
 
+#if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+        constexpr int x_qs_stride = sram_stride;
+#else
+        constexpr int x_qs_stride = 2*MMQ_TILE_NE_K + 1;
+#endif
+
+        int * x_qs_i = x_qs + i*x_qs_stride + 8*kqsx;
+
 #pragma unroll
         for (int l = 0; l < QR2_S; ++l) {
             const int * grid_pos = (const int *)(iq2s_grid + (qs[l] | ((qh << (8-2*l)) & 0x300)));
 
             const int signs0 = __vcmpne4(((signs_packed_8[l] & 0x03) << 7) | ((signs_packed_8[l] & 0x0C) << 21), 0x00000000);
             const int grid_l = iq2_apply_sign(grid_pos[0], signs0);
-#if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
-            x_qs[i*sram_stride + 8*kqsx + (2*l + 0)] = grid_l;
-#else
-            x_qs[i*(2*MMQ_TILE_NE_K + 1) + 8*kqsx + (2*l + 0)] = grid_l;
-#endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+            x_qs_i[2*l + 0] = grid_l;
 
             const int signs1 = __vcmpne4(((signs_packed_8[l] & 0x30) << 3) | ((signs_packed_8[l] & 0xC0) << 17), 0x00000000);
             const int grid_h = iq2_apply_sign(grid_pos[1], signs1);
-#if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
-            x_qs[i*sram_stride + 8*kqsx + (2*l + 1)] = grid_h;
-#else
-            x_qs[i*(2*MMQ_TILE_NE_K + 1) + 8*kqsx + (2*l + 1)] = grid_h;
-#endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+            x_qs_i[2*l + 1] = grid_h;
         }
 
 
@@ -1315,6 +1321,14 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
         const int2 q3_packed = make_int2(get_int_b2(bxi->qs, 2*kqsx+0), get_int_b2(bxi->qs, 2*kqsx+1));
         const uint8_t * q3 = (const uint8_t *) &q3_packed;
         const uint32_t aux32 = get_int_b2(bxi->qs, QK_K/16 + kqsx);
+    
+#if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+        constexpr int x_qs_stride = sram_stride;
+#else
+        constexpr int x_qs_stride = 2*MMQ_TILE_NE_K + 1;
+#endif
+
+        int * x_qs_i = x_qs + i*x_qs_stride + 8*kqsx;
 
 #pragma unroll
         for (int l = 0; l < QR3_XXS; ++l) {
@@ -1322,18 +1336,12 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
             const uint32_t signs = unpack_ksigns(aux32 >> (7*l));
 
             const int signs0 = __vcmpne4(signs & 0x08040201, 0);
-            const int grid_l = __vsub4(grid_pos.x ^ signs0, signs0);
+            const int grid_l = iq3_apply_sign(grid_pos.x ^ signs0, signs0);
+            x_qs_i[(2*l + 0)] = grid_l;
 
             const int signs1 = __vcmpne4(signs & 0x80402010, 0);
-            const int grid_h = __vsub4(grid_pos.y ^ signs1, signs1);
-
-#if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
-            x_qs[i*sram_stride + 8*kqsx + (2*l + 0)] = grid_l;
-            x_qs[i*sram_stride + 8*kqsx + (2*l + 1)] = grid_h;
-#else
-            x_qs[i*(2*MMQ_TILE_NE_K + 1) + 8*kqsx + (2*l + 0)] = grid_l;
-            x_qs[i*(2*MMQ_TILE_NE_K + 1) + 8*kqsx + (2*l + 1)] = grid_h;
-#endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+            const int grid_h = iq3_apply_sign(grid_pos.y ^ signs1, signs1);
+            x_qs_i[(2*l + 1)] = grid_h;
         }
 
         const int ls = aux32 >> 28;
@@ -1384,6 +1392,14 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
         const int       signs_packed_32 = get_int_b2(bxi->signs, kqsx);
         const uint8_t * signs_packed_8  = (const uint8_t *) &signs_packed_32;
 
+#if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+        constexpr int x_qs_stride = sram_stride;
+#else
+        constexpr int x_qs_stride = 2*MMQ_TILE_NE_K + 1;
+#endif
+
+        int * x_qs_i = x_qs + i*x_qs_stride + 8*kqsx;
+
 #pragma unroll
         for (int l = 0; l < QR3_S; ++l) {
             const int2 grid_pos = make_int2(
@@ -1391,18 +1407,12 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
                 iq3s_grid[qs[2*l+1] | ((qh << (7 - 2*l)) & 0x100)]);
 
             const int signs0 = __vcmpne4(((signs_packed_8[l] & 0x03) << 7) | ((signs_packed_8[l] & 0x0C) << 21), 0x00000000);
+            const int grid_l = iq3_apply_sign(grid_pos.x ^ signs0, signs0);
+            x_qs_i[(2*l + 0)] = grid_l;
+
             const int signs1 = __vcmpne4(((signs_packed_8[l] & 0x30) << 3) | ((signs_packed_8[l] & 0xC0) << 17), 0x00000000);
-
-            const int grid_l = __vsub4(grid_pos.x ^ signs0, signs0);
-            const int grid_h = __vsub4(grid_pos.y ^ signs1, signs1);
-
-#if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
-            x_qs[i*sram_stride + 8*kqsx + (2*l+0)] = grid_l;
-            x_qs[i*sram_stride + 8*kqsx + (2*l+1)] = grid_h;
-#else
-            x_qs[i*(2*MMQ_TILE_NE_K + 1) + 8*kqsx + (2*l+0)] = grid_l;
-            x_qs[i*(2*MMQ_TILE_NE_K + 1) + 8*kqsx + (2*l+1)] = grid_h;
-#endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+            const int grid_h = iq3_apply_sign(grid_pos.y ^ signs1, signs1);
+            x_qs_i[(2*l + 1)] = grid_h;
         }
 
         const int ls = 1 + 2*((bxi->scales[kqsx/2] >> (((2*kqsx) << 1) & 0x04)) & 0x0F);
