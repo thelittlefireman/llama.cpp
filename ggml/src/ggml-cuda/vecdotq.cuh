@@ -485,15 +485,18 @@ static __device__ __forceinline__ float vec_dot_nvfp4_q8_1(
 #pragma unroll
     for (int i = 0; i < VDR_NVFP4_Q8_1_MMVQ/2; i++) {
         const int32_t iqs0 = iqs + 2*i;
-        const int32_t iqs1 = iqs0 + 1;
+        
         const int32_t is = iqs0 >> 1;
         const int2 v0 = get_int_from_e2m1(get_int_b4(bq4->qs, iqs0));
-        const int2 v1 = get_int_from_e2m1(get_int_b4(bq4->qs, iqs1));
+
         const block_q8_1 * bq8 = bq8_1 + (is >> 1);
         const int32_t i8 = ((is & 1) << 2);
 
         int sumi = ggml_cuda_dp4a(v0.x, get_int_b4(bq8->qs, i8 + 0), 0);
         sumi = ggml_cuda_dp4a(v0.y, get_int_b4(bq8->qs, i8 + 2), sumi);
+
+        const int32_t iqs1 = iqs0 + 1;
+        const int2 v1 = get_int_from_e2m1(get_int_b4(bq4->qs, iqs1));
         sumi = ggml_cuda_dp4a(v1.x, get_int_b4(bq8->qs, i8 + 1), sumi);
         sumi = ggml_cuda_dp4a(v1.y, get_int_b4(bq8->qs, i8 + 3), sumi);
 
@@ -848,16 +851,18 @@ static __device__ __forceinline__ float vec_dot_q1_0_q8_1(
     for (int j = 0; j < 2; ++j) {
         const int q  = qs[j];
 
-        const int u0 = get_int_b4(bq8_1_chunk->qs, j*4+0);
-        const int u1 = get_int_b4(bq8_1_chunk->qs, j*4+1);
-        const int u2 = get_int_b4(bq8_1_chunk->qs, j*4+2);
-        const int u3 = get_int_b4(bq8_1_chunk->qs, j*4+3);
-
         const int4 v = unpack_q1_0_16(q);
-        
+
+        const int u0 = get_int_b4(bq8_1_chunk->qs, j*4+0);
         sumi = ggml_cuda_dp4a(v.x, u0, sumi);
+
+        const int u1 = get_int_b4(bq8_1_chunk->qs, j*4+1);
         sumi = ggml_cuda_dp4a(v.y, u1, sumi);
+
+        const int u2 = get_int_b4(bq8_1_chunk->qs, j*4+2);
         sumi = ggml_cuda_dp4a(v.z, u2, sumi);
+
+        const int u3 = get_int_b4(bq8_1_chunk->qs, j*4+3);
         sumi = ggml_cuda_dp4a(v.w, u3, sumi);
     }
 
@@ -885,12 +890,13 @@ static __device__ __forceinline__ float vec_dot_q2_0_q8_1(
 #pragma unroll
     for (int j = 0; j < 4; ++j) {
         const int q  = qs[j];
-        const int u  = get_int_b4(bq8_1_chunk->qs, j*2+0);
-        const int v  = get_int_b4(bq8_1_chunk->qs, j*2+1);
         
         const int2 qv = unpack_q2_0_16(q);
 
+        const int u  = get_int_b4(bq8_1_chunk->qs, j*2+0);
         sumi = ggml_cuda_dp4a(u, qv.x, sumi);
+
+        const int v  = get_int_b4(bq8_1_chunk->qs, j*2+1);
         sumi = ggml_cuda_dp4a(v, qv.y, sumi);
     }
 
@@ -1307,13 +1313,12 @@ static __device__ __forceinline__ float vec_dot_iq3_xxs_q8_1(
         const int grid_l = iq3_apply_sign(grid_pos.x ^ signs0, signs0);
 
         const int u0 = get_int_b4(bq8_1[iqs/2].qs, l0 + 0);
+        sumi = ggml_cuda_dp4a(grid_l, u0, sumi);
 
         const int signs1 = __vcmpne4(signs & 0x80402010, 0);
         const int grid_h = iq3_apply_sign(grid_pos.y ^ signs1, signs1);
 
         const int u1 = get_int_b4(bq8_1[iqs/2].qs, l0 + 1);
-
-        sumi = ggml_cuda_dp4a(grid_l, u0, sumi);
         sumi = ggml_cuda_dp4a(grid_h, u1, sumi);
     }
 
@@ -1348,15 +1353,13 @@ static __device__ __forceinline__ float vec_dot_iq3_s_q8_1(
             iq3s_grid[qs[l0 + 1] | ((qh << (7 - l0)) & 0x100)]);
 
         const int signs0 = __vcmpne4(((signs_packed_8[l0/2] & 0x03) << 7) | ((signs_packed_8[l0/2] & 0x0C) << 21), 0x00000000);
-        const int signs1 = __vcmpne4(((signs_packed_8[l0/2] & 0x30) << 3) | ((signs_packed_8[l0/2] & 0xC0) << 17), 0x00000000);
-
         const int grid_l = iq3_apply_sign(grid_pos.x ^ signs0, signs0);
-        const int grid_h = iq3_apply_sign(grid_pos.y ^ signs1, signs1);
-
         const int u0 = get_int_b4(bq8_1[iqs/2].qs, l0 + 0);
-        const int u1 = get_int_b4(bq8_1[iqs/2].qs, l0 + 1);
-
         sumi = ggml_cuda_dp4a(grid_l, u0, sumi);
+
+        const int signs1 = __vcmpne4(((signs_packed_8[l0/2] & 0x30) << 3) | ((signs_packed_8[l0/2] & 0xC0) << 17), 0x00000000);
+        const int grid_h = iq3_apply_sign(grid_pos.y ^ signs1, signs1);
+        const int u1 = get_int_b4(bq8_1[iqs/2].qs, l0 + 1);
         sumi = ggml_cuda_dp4a(grid_h, u1, sumi);
     }
 
@@ -1384,12 +1387,11 @@ static __device__ __forceinline__ float vec_dot_iq1_s_q8_1(
         const int grid = iq1s_grid_gpu[qs[l0/2] | (((qh >> 3*(l0/2)) & 0x07) << 8)];
 
         const int grid0 = (grid >> 0) & 0x0F0F0F0F;
-        const int grid1 = (grid >> 4) & 0x0F0F0F0F;
-
         const int u0 = get_int_b4(bq8_1[iqs].qs, l0 + 0);
-        const int u1 = get_int_b4(bq8_1[iqs].qs, l0 + 1);
-
         sumi = ggml_cuda_dp4a(grid0, u0, sumi);
+
+        const int grid1 = (grid >> 4) & 0x0F0F0F0F;
+        const int u1 = get_int_b4(bq8_1[iqs].qs, l0 + 1);
         sumi = ggml_cuda_dp4a(grid1, u1, sumi);
     }
 
@@ -1485,9 +1487,9 @@ static __device__ __forceinline__ float vec_dot_iq4_xs_q8_1(
         const int2 v = get_int_from_table_16(aux_q4, kvalues_iq4nl);
 
         const int u0 = get_int_b4(bq8_1[iqs/4].qs, j + 0);
-        const int u1 = get_int_b4(bq8_1[iqs/4].qs, j + 4);
-
         sumi = ggml_cuda_dp4a(v.x, u0, sumi);
+
+        const int u1 = get_int_b4(bq8_1[iqs/4].qs, j + 4);
         sumi = ggml_cuda_dp4a(v.y, u1, sumi);
     }
 
