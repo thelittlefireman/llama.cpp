@@ -1115,16 +1115,19 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
             const uint32_t signs = unpack_ksigns(aux32 >> (7 * l));
 
             const int signs0 = __vcmpne4(signs & 0x08040201, 0);
-            const int grid0  = iq2_apply_sign(grid_pos.x, signs0);
-
-            const int signs1 = __vcmpne4(signs & 0x80402010, 0);
-            const int grid1  = iq2_apply_sign(grid_pos.y, signs1);
-
+            const int grid0  = iq2_apply_sign_swar(grid_pos.x, signs0);
 #if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
             x_qs[i*sram_stride + 8*kqsx + (2*l + 0)] = grid0;
-            x_qs[i*sram_stride + 8*kqsx + (2*l + 1)] = grid1;
 #else
             x_qs[i*(2*MMQ_TILE_NE_K + 1) + 8*kqsx + (2*l + 0)] = grid0;
+#endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+
+            const int signs1 = __vcmpne4(signs & 0x80402010, 0);
+            const int grid1  = iq2_apply_sign_swar(grid_pos.y, signs1);
+
+#if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+            x_qs[i*sram_stride + 8*kqsx + (2*l + 1)] = grid1;
+#else
             x_qs[i*(2*MMQ_TILE_NE_K + 1) + 8*kqsx + (2*l + 1)] = grid1;
 #endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
         }
@@ -1178,16 +1181,20 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
             const uint32_t signs = unpack_ksigns(q2[l] >> 9);
 
             const int signs0 = __vcmpne4(signs & 0x08040201, 0);
-            const int grid_l = iq2_apply_sign(grid_pos.x, signs0);
-
-            const int signs1 = __vcmpne4(signs & 0x80402010, 0);
-            const int grid_h = iq2_apply_sign(grid_pos.y, signs1);
+            const int grid_l = iq2_apply_sign_swar(grid_pos.x, signs0);
 
 #if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
             x_qs[i*sram_stride + 8*kqsx + (2*l + 0)] = grid_l;
-            x_qs[i*sram_stride + 8*kqsx + (2*l + 1)] = grid_h;
 #else
             x_qs[i*(2*MMQ_TILE_NE_K + 1) + 8*kqsx + (2*l + 0)] = grid_l;
+#endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+
+            const int signs1 = __vcmpne4(signs & 0x80402010, 0);
+            const int grid_h = iq2_apply_sign_swar(grid_pos.y, signs1);
+
+#if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+            x_qs[i*sram_stride + 8*kqsx + (2*l + 1)] = grid_h;
+#else
             x_qs[i*(2*MMQ_TILE_NE_K + 1) + 8*kqsx + (2*l + 1)] = grid_h;
 #endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
         }
@@ -1246,19 +1253,22 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
             const int * grid_pos = (const int *)(iq2s_grid + (qs[l] | ((qh << (8-2*l)) & 0x300)));
 
             const int signs0 = __vcmpne4(((signs_packed_8[l] & 0x03) << 7) | ((signs_packed_8[l] & 0x0C) << 21), 0x00000000);
-            const int signs1 = __vcmpne4(((signs_packed_8[l] & 0x30) << 3) | ((signs_packed_8[l] & 0xC0) << 17), 0x00000000);
-
             const int grid_l = iq2_apply_sign(grid_pos[0], signs0);
-            const int grid_h = iq2_apply_sign(grid_pos[1], signs1);
-
 #if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
             x_qs[i*sram_stride + 8*kqsx + (2*l + 0)] = grid_l;
-            x_qs[i*sram_stride + 8*kqsx + (2*l + 1)] = grid_h;
 #else
             x_qs[i*(2*MMQ_TILE_NE_K + 1) + 8*kqsx + (2*l + 0)] = grid_l;
+#endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+
+            const int signs1 = __vcmpne4(((signs_packed_8[l] & 0x30) << 3) | ((signs_packed_8[l] & 0xC0) << 17), 0x00000000);
+            const int grid_h = iq2_apply_sign(grid_pos[1], signs1);
+#if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+            x_qs[i*sram_stride + 8*kqsx + (2*l + 1)] = grid_h;
+#else
             x_qs[i*(2*MMQ_TILE_NE_K + 1) + 8*kqsx + (2*l + 1)] = grid_h;
 #endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
         }
+
 
         const int ls = bxi->scales[kqsx];
         const float d = bxi->d;
@@ -1574,15 +1584,23 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
         const block_mxfp4 * bxi = (const block_mxfp4 *) x + kbx0 + i*stride + kbx;
 
         const int aux_q4 = get_int_b1(bxi->qs, kqsx);
-        const int2 v = get_int_from_e2m1(aux_q4);
         const int k0 = kbx * (2 * QI_MXFP4) + kqsx;
 
+        // nibbles 0,2,4,6
+        const uint32_t v0 = get_int_from_table_16_lookup_4(aux_q4, kvalues_mxfp4);
 #if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
-        x_qs[i*sram_stride + k0 + 0]        = v.x;
-        x_qs[i*sram_stride + k0 + QI_MXFP4] = v.y;
+        x_qs[i*sram_stride + k0 + 0]        = v0;
 #else
-        x_qs[i*(2*MMQ_TILE_NE_K + 1) + k0 + 0]        = v.x;
-        x_qs[i*(2*MMQ_TILE_NE_K + 1) + k0 + QI_MXFP4] = v.y;
+        x_qs[i*(2*MMQ_TILE_NE_K + 1) + k0 + 0]        = v0;
+#endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE)  || defined(AMD_WMMA_AVAILABLE)
+
+        // nibbles 1,3,5,7
+        const uint32_t v1 = get_int_from_table_16_lookup_4(aux_q4 >> 4, kvalues_mxfp4);
+
+#if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+        x_qs[i*sram_stride + k0 + QI_MXFP4] = v1;
+#else
+        x_qs[i*(2*MMQ_TILE_NE_K + 1) + k0 + QI_MXFP4] = v1;
 #endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE)  || defined(AMD_WMMA_AVAILABLE)
     }
 
@@ -1686,20 +1704,43 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
 
 #pragma unroll
         for (int sub = 0; sub < QK_NVFP4 / QK_NVFP4_SUB; ++sub) {
-            const int2 q0 = get_int_from_e2m1(src_qs[2 * sub + 0]);
-            const int2 q1 = get_int_from_e2m1(src_qs[2 * sub + 1]);
+            // TODO CHANGE TO kvalues_nvfp4 like on master
+            const uint32_t packed0 = src_qs[2*sub + 0];
+
+            const uint32_t q0x = get_int_from_table_16_lookup_4(packed0, kvalues_mxfp4);
+#if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+            x_qs[i*sram_stride + kqs + 4 * sub + 0] = q0x;
+#else
+            x_qs[i * (2 * MMQ_TILE_NE_K + 1) + kqs + 4 * sub + 0] = q0x;
+#endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+
+
+            const uint32_t q0y =  get_int_from_table_16_lookup_4(packed0 >> 4, kvalues_mxfp4);
+#if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+            x_qs[i*sram_stride + kqs + 4 * sub + 2] = q0y;
+#else
+            x_qs[i * (2 * MMQ_TILE_NE_K + 1) + kqs + 4 * sub + 2] = q0y;
+#endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+
+            const uint32_t packed1 = src_qs[2*sub + 1];
+
+            const uint32_t q1x = get_int_from_table_16_lookup_4(packed1, kvalues_mxfp4);
+#if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+            x_qs[i*sram_stride + kqs + 4 * sub + 1] = q1x;
+#else
+            x_qs[i * (2 * MMQ_TILE_NE_K + 1) + kqs + 4 * sub + 1] = q1x;
+#endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+
+            const uint32_t q1y =  get_int_from_table_16_lookup_4(packed1 >> 4, kvalues_mxfp4);
+#if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+            x_qs[i*sram_stride + kqs + 4 * sub + 3] = q1y;
+#else
+            x_qs[i * (2 * MMQ_TILE_NE_K + 1) + kqs + 4 * sub + 3] = q1y;
+#endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
 
 #if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
-            x_qs[i*sram_stride + kqs + 4 * sub + 0] = q0.x;
-            x_qs[i*sram_stride + kqs + 4 * sub + 1] = q1.x;
-            x_qs[i*sram_stride + kqs + 4 * sub + 2] = q0.y;
-            x_qs[i*sram_stride + kqs + 4 * sub + 3] = q1.y;
             x_df[i*sram_stride + ksc + sub] = ggml_cuda_ue4m3_to_fp32(bxi->d[sub]);
 #else
-            x_qs[i * (2 * MMQ_TILE_NE_K + 1) + kqs + 4 * sub + 0] = q0.x;
-            x_qs[i * (2 * MMQ_TILE_NE_K + 1) + kqs + 4 * sub + 1] = q1.x;
-            x_qs[i * (2 * MMQ_TILE_NE_K + 1) + kqs + 4 * sub + 2] = q0.y;
-            x_qs[i * (2 * MMQ_TILE_NE_K + 1) + kqs + 4 * sub + 3] = q1.y;
             x_df[i * (2 * MMQ_TILE_NE_K * 2 / QI_NVFP4) + i / (QK_NVFP4_SUB / QI_NVFP4) + ksc + sub] = ggml_cuda_ue4m3_to_fp32(bxi->d[sub]);
 #endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
         }
