@@ -700,7 +700,9 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
 
     const int i0 = (threadIdx.y / ntx) * rows_per_warp;
 
-    for (int k01 = 0; k01 < MMQ_TILE_NE_K; k01 += 4) {
+    // Keep K loops rolled to limit MMA temporary live ranges.
+#pragma unroll 1
+    for (int k01 = 0; k01 < MMQ_TILE_NE_K/2; k01 += 4) {
         const int k0 = k00 + k01;
 
         tile_A A[ntx];
@@ -715,20 +717,9 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
             load_ldmatrix(B, y_qs + j0*MMQ_TILE_Y_K + k01, MMQ_TILE_Y_K);
 
             const int j = j0 + tile_C::get_j(0);
-            const float dB = (k01 < MMQ_TILE_NE_K/2) ? __half22float2(y_ds[j*MMQ_TILE_Y_K]).x : __half22float2(y_ds[j*MMQ_TILE_Y_K]).y;
-            const float sB = (k01 >= MMQ_TILE_NE_K * 3/4) ? 0
-                                              : (((k01/4)%2) ? __half22float2(y_ds[j*MMQ_TILE_Y_K + (1 + k01/QI8_1)]).y
-                                                             : __half22float2(y_ds[j*MMQ_TILE_Y_K + (1 + k01/QI8_1)]).x);
-
-            tile_C Cm;
-            if (k01 >= MMQ_TILE_NE_K * 3/4) {
-                tile_A A1;
-#pragma unroll
-                for (int l = 0; l < tile_A::ne; ++l) {
-                    A1.x[l] = 0x01010101;
-                }
-                mma(Cm, A1, B);
-            }
+            const float dB = __low2float(y_ds[j*MMQ_TILE_Y_K]);
+            const half2 sB2 = y_ds[j*MMQ_TILE_Y_K + (1 + k01/QI8_1)];
+            const float sB = ((k01/4)%2) ? __high2float(sB2) : __low2float(sB2);
 
 #pragma unroll
             for (int n = 0; n < ntx; ++n) {
@@ -739,12 +730,87 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
                 for (int l = 0; l < tile_C::ne; ++l) {
                     const int i = i0 + n*tile_C::I + tile_C::get_i(l);
                     const float2 dm = __half22float2(x_dm[i*sram_stride + k0/4]);
-                    float tmp = Cd.x[l]*dm.x;
-                    if (k01 >= MMQ_TILE_NE_K * 3/4) {
-                        tmp -= Cm.x[l]*dm.y;
-                    }
-                    sum[(j0/tile_C::J + n)*tile_C::ne + l] += tmp*dB;
+                    sum[(j0/tile_C::J + n)*tile_C::ne + l] += Cd.x[l]*dm.x*dB;
                     sum[(j0/tile_C::J + n)*tile_C::ne + l] -= dm.y*sB;
+                }
+            }
+        }
+    }
+
+#pragma unroll 1
+    for (int k01 = MMQ_TILE_NE_K/2; k01 < MMQ_TILE_NE_K*3/4; k01 += 4) {
+        const int k0 = k00 + k01;
+
+        tile_A A[ntx];
+#pragma unroll
+        for (int n = 0; n < ntx; ++n) {
+            load_ldmatrix(A[n], x_qs + (i0 + n*tile_A::I)*sram_stride + k0, sram_stride);
+        }
+
+#pragma unroll
+        for (int j0 = 0; j0 < J; j0 += ntx*tile_C::J) {
+            tile_B B;
+            load_ldmatrix(B, y_qs + j0*MMQ_TILE_Y_K + k01, MMQ_TILE_Y_K);
+
+            const int j = j0 + tile_C::get_j(0);
+            const float dB = __high2float(y_ds[j*MMQ_TILE_Y_K]);
+            const half2 sB2 = y_ds[j*MMQ_TILE_Y_K + (1 + k01/QI8_1)];
+            const float sB = ((k01/4)%2) ? __high2float(sB2) : __low2float(sB2);
+
+#pragma unroll
+            for (int n = 0; n < ntx; ++n) {
+                tile_C Cd;
+                mma(Cd, A[n], B);
+
+#pragma unroll
+                for (int l = 0; l < tile_C::ne; ++l) {
+                    const int i = i0 + n*tile_C::I + tile_C::get_i(l);
+                    const float2 dm = __half22float2(x_dm[i*sram_stride + k0/4]);
+                    sum[(j0/tile_C::J + n)*tile_C::ne + l] += Cd.x[l]*dm.x*dB;
+                    sum[(j0/tile_C::J + n)*tile_C::ne + l] -= dm.y*sB;
+                }
+            }
+        }
+    }
+
+#pragma unroll 1
+    for (int k01 = MMQ_TILE_NE_K*3/4; k01 < MMQ_TILE_NE_K; k01 += 4) {
+        const int k0 = k00 + k01;
+
+        tile_A A[ntx];
+#pragma unroll
+        for (int n = 0; n < ntx; ++n) {
+            load_ldmatrix(A[n], x_qs + (i0 + n*tile_A::I)*sram_stride + k0, sram_stride);
+        }
+
+#pragma unroll
+        for (int j0 = 0; j0 < J; j0 += ntx*tile_C::J) {
+            tile_B B;
+            load_ldmatrix(B, y_qs + j0*MMQ_TILE_Y_K + k01, MMQ_TILE_Y_K);
+
+            const int j = j0 + tile_C::get_j(0);
+            const float dB = __high2float(y_ds[j*MMQ_TILE_Y_K]);
+
+            tile_A A1;
+#pragma unroll
+            for (int l = 0; l < tile_A::ne; ++l) {
+                A1.x[l] = 0x01010101;
+            }
+
+            tile_C Cm;
+            mma(Cm, A1, B);
+
+#pragma unroll
+            for (int n = 0; n < ntx; ++n) {
+                tile_C Cd;
+                mma(Cd, A[n], B);
+
+#pragma unroll
+                for (int l = 0; l < tile_C::ne; ++l) {
+                    const int i = i0 + n*tile_C::I + tile_C::get_i(l);
+                    const float2 dm = __half22float2(x_dm[i*sram_stride + k0/4]);
+                    const float tmp = Cd.x[l]*dm.x - Cm.x[l]*dm.y;
+                    sum[(j0/tile_C::J + n)*tile_C::ne + l] += tmp*dB;
                 }
             }
         }
