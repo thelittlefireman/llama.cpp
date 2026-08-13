@@ -42,23 +42,25 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
         const int16_t    * qxi = (const int16_t *) bxi->qs + kqsx * 2;
 
         const int dst_offset = kbx*(scale_entries_per_block*QI8_0) + kqsx*QI8_0;
+
+#if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+        constexpr int x_qs_stride = sram_stride;
+#else
+        constexpr int x_qs_stride = 2*MMQ_TILE_NE_K + 1;
+#endif
+
+        int * x_qs_i = x_qs + i*x_qs_stride + dst_offset;
+
+
 #pragma unroll
         for (int j = 0; j < 2; ++j) {
             const int q  = qxi[j];
 
             const int4 v = unpack_q1_0_16(q);
-
-#if defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
-            x_qs[i*sram_stride           + dst_offset + j*4+0] = v.x;
-            x_qs[i*sram_stride           + dst_offset + j*4+1] = v.y;
-            x_qs[i*sram_stride           + dst_offset + j*4+2] = v.z;
-            x_qs[i*sram_stride           + dst_offset + j*4+3] = v.w;
-#else
-            x_qs[i*(2*MMQ_TILE_NE_K + 1) + dst_offset + j*4+0] = v.x;
-            x_qs[i*(2*MMQ_TILE_NE_K + 1) + dst_offset + j*4+1] = v.y;
-            x_qs[i*(2*MMQ_TILE_NE_K + 1) + dst_offset + j*4+2] = v.z;
-            x_qs[i*(2*MMQ_TILE_NE_K + 1) + dst_offset + j*4+3] = v.w;
-#endif // defined(AMD_MFMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE)
+            x_qs[j*4+0] = v.x;
+            x_qs[j*4+1] = v.y;
+            x_qs[j*4+2] = v.z;
+            x_qs[j*4+3] = v.w;
         }
     }
 
