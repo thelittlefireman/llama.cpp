@@ -374,6 +374,7 @@ static bool ggml_cuda_is_aligned(const ggml_tensor * tensor, const size_t alignm
 #ifdef GGML_USE_HIP
 template <int dpp_ctrl, typename T, int row_mask = 0xf, int bank_mask = 0xf, bool bound_ctrl = true>
 static __device__ __forceinline__ T hip_move_dpp(T v) {
+        static_assert(sizeof(T) == sizeof(int), "hip_move_dpp requires a 32-bit type");
     return __builtin_bit_cast(
         T,
         __builtin_amdgcn_update_dpp(
@@ -389,6 +390,7 @@ static __device__ __forceinline__ T hip_move_dpp(T v) {
 
 template <int mask, typename T>
 static __device__ __forceinline__ T hip_ds_swizzle(T v) {
+    static_assert(sizeof(T) == sizeof(int), "hip_move_dpp requires a 32-bit type");
     return __builtin_bit_cast(T, __builtin_amdgcn_ds_swizzle(__builtin_bit_cast(int, v), mask));
 }
 #endif // GGML_USE_HIP
@@ -400,7 +402,9 @@ static __device__ __forceinline__ T ggml_cuda_shfl_xor_sync(T x, int offset) {
  #if defined(__GFX9__)
     // clang (v20) will not unroll loops with just the plain `offset` in switch
     switch (~offset) {
-        // subgroups (width) should not make a difference for a butterfly shuffle pattern
+    // For the power-of-two butterfly reductions used here, offset < width
+    // and offset is a single bit. Therefore XOR(offset) never leaves the
+    // corresponding width-aligned subgroup.
         case ~1: return hip_move_dpp<0xB1>(x);   // quad_perm:[1,0,3,2]
         case ~2: return hip_move_dpp<0x4E>(x);   // quad_perm:[2,3,0,1]
         case ~4: return hip_ds_swizzle<0x101F>(x);    // ds_swizzle AND mask = 0x1F; OR mask  = 0; XOR mask = 4
