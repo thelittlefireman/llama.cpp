@@ -110,12 +110,14 @@ gated_delta_net_cuda(const float * q,
                 attn_data[col] = attn_col * scale;
             }
         } else {
-            // kv[col] = sum_i g[i] * S[i][col] * k[i]
+            // Apply the per-row decay once. kv uses the decayed state and the
+            // same values are then reused for the rank-1 correction below.
             float kv_shard = 0.0f;
 #pragma unroll
             for (int r = 0; r < rows_per_lane; r++) {
                 const int i = r * warp_size + lane;
-                kv_shard += expf(g_t[i]) * s_shard[r] * k_reg[r];
+                s_shard[r] *= expf(g_t[i]);
+                kv_shard += s_shard[r] * k_reg[r];
             }
 
             float kv_col = warp_reduce_sum<warp_size>(kv_shard);
@@ -123,13 +125,12 @@ gated_delta_net_cuda(const float * q,
             // delta[col] = (v[col] - kv[col]) * beta
             float delta_col = (v_t[col] - kv_col) * beta_val;
 
-            // fused: S[i][col] = g[i] * S[i][col] + k[i] * delta[col]
+            // fused: S[i][col] += k[i] * delta[col]
             // attn[col] = (S^T @ q)[col] = sum_i S[i][col] * q[i]
             float attn_partial = 0.0f;
 #pragma unroll
             for (int r = 0; r < rows_per_lane; r++) {
-                const int i = r * warp_size + lane;
-                s_shard[r]  = expf(g_t[i]) * s_shard[r] + k_reg[r] * delta_col;
+                s_shard[r] += k_reg[r] * delta_col;
                 attn_partial += s_shard[r] * q_reg[r];
             }
 
