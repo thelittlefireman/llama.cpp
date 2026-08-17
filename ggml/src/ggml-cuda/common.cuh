@@ -429,6 +429,122 @@ static __device__ __forceinline__ T ggml_cuda_shfl_xor_sync(T x, int offset) {
 #endif // defined(GGML_USE_HIP)
 }
 
+template<int width = WARP_SIZE>
+static __device__ __forceinline__ float ggml_cuda_max_xor_sync(float x, int offset) {
+#if defined(GGML_USE_HIP)
+ #if defined(__GFX9__)
+
+    // GFX9:
+    // XOR 1  -> quad_perm
+    // XOR 2  -> quad_perm
+    // XOR 4  -> DS, handled outside
+    // XOR 8  -> row_ror
+    // XOR 16 -> DS, handled outside
+
+    switch (~offset) {
+        case ~16: {
+                const float y = hip_ds_swizzle<0x401f>(x);
+                asm(
+                    "v_max_f32 %0, %0, %1"
+                    : "+v"(x)
+                    : "v"(y)
+                );
+                return x;
+            }
+        case ~8: 
+            asm(
+                "v_max_f32 %0, %0, %0 "
+                "row_ror:8 "
+                "row_mask:0xf bank_mask:0xf bound_ctrl:1"
+                : "+v"(x)
+            );
+            return x;
+        case ~4: {
+                const float y = hip_ds_swizzle<0x101f>(x);
+                asm(
+                    "v_max_f32 %0, %0, %1"
+                    : "+v"(x)
+                    : "v"(y)
+                );
+                return x;
+            }
+        case ~2:  
+            asm(
+                "v_max_f32 %0, %0, %0 "
+                "quad_perm:[2,3,0,1] "
+                "row_mask:0xf bank_mask:0xf bound_ctrl:1"
+                : "+v"(x)
+            );
+            return x;
+        case ~1: 
+            asm(
+                "v_max_f32 %0, %0, %0 "
+                "quad_perm:[1,0,3,2] "
+                "row_mask:0xf bank_mask:0xf bound_ctrl:1"
+                : "+v"(x)
+            );
+            return x;
+        default:
+            return fmaxf(x, __shfl_xor(x, offset, width));
+        }
+ # else
+    // GFX10+:
+    // XOR 1  -> row_xmask:1
+    // XOR 2  -> row_xmask:2
+    // XOR 4  -> row_xmask:4
+    // XOR 8  -> row_xmask:8
+    // XOR 16 -> DS, handled outside
+    switch (~offset) {
+        case ~16: {
+                const float y = hip_ds_swizzle<0x401f>(x);
+                asm(
+                    "v_max_f32 %0, %0, %1"
+                    : "+v"(x)
+                    : "v"(y)
+                );
+                return x;
+            }
+        case ~8: 
+            asm(
+                "v_max_f32 %0, %0, %0 "
+                "row_xmask:8 "
+                "row_mask:0xf bank_mask:0xf bound_ctrl:1"
+                : "+v"(x)
+            );
+            return x;
+        case ~4:
+            asm(
+                "v_max_f32 %0, %0, %0 "
+                "row_xmask:4 "
+                "row_mask:0xf bank_mask:0xf bound_ctrl:1"
+                : "+v"(x)
+            );
+            return x;
+        case ~2:  
+            asm(
+                "v_max_f32 %0, %0, %0 "
+                "row_xmask:2 "
+                "row_mask:0xf bank_mask:0xf bound_ctrl:1"
+                : "+v"(x)
+            );
+            return x;
+        case ~1: 
+            asm(
+                "v_max_f32 %0, %0, %0 "
+                "row_xmask:1 "
+                "row_mask:0xf bank_mask:0xf bound_ctrl:1"
+                : "+v"(x)
+            );
+            return x;
+        default:
+            return fmaxf(x, __shfl_xor(x, offset, width));
+        }
+ # endif // defined(__GFX9__)
+#else
+    return fmaxf(x, __shfl_xor_sync(0xffffffff, x, offset, width));
+#endif // defined(GGML_USE_HIP)
+}
+
 
 static constexpr __device__ int ggml_cuda_get_physical_warp_size() {
 #if defined(GGML_USE_HIP) && (defined(__GFX9__) || defined(__GFX8__))
@@ -503,11 +619,6 @@ static __device__ __forceinline__ int warp_reduce_sum(int x) {
 #if !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_AMPERE
     return __reduce_add_sync(0xffffffff, x);
 #endif // !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_AMPERE
-#if defined(GGML_USE_HIP)
-    if constexpr (width == ggml_cuda_get_physical_warp_size()) {
-        return (int) __builtin_amdgcn_wave_reduce_add_u32((uint32_t) x, 0);
-    }
-#endif // defined(GGML_USE_HIP)
 #pragma unroll
     for (int offset = width/2; offset > 0; offset >>= 1) {
         x += ggml_cuda_shfl_xor_sync<width>(x, offset);
@@ -517,11 +628,6 @@ static __device__ __forceinline__ int warp_reduce_sum(int x) {
 
 template<int width = WARP_SIZE>
 static __device__ __forceinline__ float warp_reduce_sum(float x) {
-#if defined(GGML_USE_HIP)
-    if constexpr (width == ggml_cuda_get_physical_warp_size()) {
-        return __builtin_amdgcn_wave_reduce_fadd_f32(x, 0);  // 0 = auto strategy
-    }
-#endif // defined(GGML_USE_HIP)
 #pragma unroll
     for (int offset = width/2; offset > 0; offset >>= 1) {
         x += ggml_cuda_shfl_xor_sync<width>(x, offset);
@@ -584,15 +690,17 @@ template<int width = WARP_SIZE>
 static __device__ __forceinline__ float warp_reduce_max(float x) {
 #if defined(GGML_USE_HIP)
     if constexpr (width == ggml_cuda_get_physical_warp_size()) {
-        return __builtin_amdgcn_wave_reduce_fmax_f32(x, 0);
+        return __builtin_amdgcn_wave_reduce_fmax_f32(x, 2); // 2 == force DPP
     }
-#endif // defined(GGML_USE_HIP)
-#pragma unroll
+#endif
+    x = fmaxf(x, x);
+    #pragma unroll
     for (int offset = width/2; offset > 0; offset >>= 1) {
-        x = fmaxf(x, ggml_cuda_shfl_xor_sync<width>(x, offset));
+        x = ggml_cuda_max_xor_sync<width>(x, offset);
     }
     return x;
 }
+
 
 template<typename T, int width = WARP_SIZE>
 static __device__ __forceinline__ T warp_prefix_inclusive_sum(T x) {
