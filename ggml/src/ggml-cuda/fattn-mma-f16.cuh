@@ -728,9 +728,10 @@ static __device__ __forceinline__ void flash_attn_ext_f16_iter(
         // Values per KQ column are spread across 8 threads:
 #pragma unroll
         for (int col = 0; col < cols_per_thread; ++col) {
+            KQ_max_new[col] = fmaxf(KQ_max_new[col], KQ_max_new[col]);
 #pragma unroll
             for (int offset = 16; offset >= 4; offset >>= 1) {
-                KQ_max_new[col] = fmaxf(KQ_max_new[col], ggml_cuda_shfl_xor_sync(KQ_max_new[col], offset));
+                KQ_max_new[col] = ggml_cuda_max_xor_sync(KQ_max_new[col], offset);
             }
         }
 
@@ -821,9 +822,10 @@ static __device__ __forceinline__ void flash_attn_ext_f16_iter(
             constexpr int offset_first = 2;
             constexpr int offset_last  = 2;
 #endif // defined(TURING_MMA_AVAILABLE)
+            KQ_max_new[col] = fmaxf(KQ_max_new[col], KQ_max_new[col]);
 #pragma unroll
             for (int offset = offset_first; offset >= offset_last; offset >>= 1) {
-                KQ_max_new[col] = fmaxf(KQ_max_new[col], ggml_cuda_shfl_xor_sync(KQ_max_new[col], offset));
+                KQ_max_new[col] = ggml_cuda_max_xor_sync(KQ_max_new[col], offset);
             }
         }
 
@@ -1510,10 +1512,13 @@ static __device__ __forceinline__ void flash_attn_ext_f16_process_tile(
         for (int imeta = 1; imeta < nmeta; ++imeta) {
             KQ_cmn = fmaxf(KQ_cmn, meta[imeta].x);
         }
+        if constexpr (cols_per_warp < warp_size) {
+            KQ_cmn = fmaxf(KQ_cmn, KQ_cmn);
+        }
 #pragma unroll
         for (int offset = np*cols_per_warp/2; offset >= cols_per_warp; offset >>= 1) {
             if (offset < warp_size) {
-                KQ_cmn = fmaxf(KQ_cmn, ggml_cuda_shfl_xor_sync(KQ_cmn, offset));
+                KQ_cmn = ggml_cuda_max_xor_sync(KQ_cmn, offset);
             }
         }
 

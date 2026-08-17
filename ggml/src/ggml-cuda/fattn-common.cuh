@@ -345,10 +345,11 @@ static __device__ __forceinline__ void quantize_q8_1_to_shared(
         amax = fmaxf(amax, fabsf(vals[l]));
         sum += vals[l];
     }
+    amax = fmaxf(amax, amax);
 #pragma unroll
     for (int mask = QI8_1/2; mask > 0; mask >>= 1) {
-        amax = fmaxf(amax, ggml_cuda_shfl_xor_sync<32>(amax, mask));
-        sum +=             ggml_cuda_shfl_xor_sync<32>(sum,  mask);
+        amax = ggml_cuda_max_xor_sync<32>(amax, mask);
+        sum += ggml_cuda_shfl_xor_sync<32>(sum,  mask);
     }
 
     const float d = amax / 127;

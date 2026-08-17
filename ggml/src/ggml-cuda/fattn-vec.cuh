@@ -291,9 +291,12 @@ static __global__ void flash_attn_ext_vec(
 
 #pragma unroll
         for (int j = 0; j < ncols; ++j) {
+            if constexpr (nthreads_KQ < WARP_SIZE) {
+                KQ_max_new[j] = fmaxf(KQ_max_new[j], KQ_max_new[j]);
+            }
 #pragma unroll
             for (int offset = nthreads_KQ; offset < WARP_SIZE; offset <<= 1) {
-                KQ_max_new[j] = fmaxf(KQ_max_new[j], ggml_cuda_shfl_xor_sync(KQ_max_new[j], offset));
+                KQ_max_new[j] = ggml_cuda_max_xor_sync(KQ_max_new[j], offset);
             }
             const float KQ_max_scale = expf(KQ_max[j] - KQ_max_new[j]);
             KQ_max[j] = KQ_max_new[j];
