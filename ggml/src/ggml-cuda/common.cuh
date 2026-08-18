@@ -545,6 +545,113 @@ static __device__ __forceinline__ float ggml_cuda_max_xor_sync(float x, int offs
 #endif // defined(GGML_USE_HIP)
 }
 
+template<int width = WARP_SIZE>
+static __device__ __forceinline__
+uint32_t ggml_cuda_or_xor_sync(uint32_t x, int offset) {
+#if defined(GGML_USE_HIP)
+
+#if defined(__GFX9__)
+
+    switch (~offset) {
+        case ~16: {
+            const uint32_t y =
+                hip_ds_swizzle<0x401f>(x);
+            return x | y;
+        }
+
+        case ~8:
+            asm(
+                "v_or_b32 %0, %0, %0 "
+                "row_ror:8 "
+                "row_mask:0xf bank_mask:0xf bound_ctrl:1"
+                : "+v"(x)
+            );
+            return x;
+
+        case ~4: {
+            const uint32_t y =
+                hip_ds_swizzle<0x101f>(x);
+            return x | y;
+        }
+
+        case ~2:
+            asm(
+                "v_or_b32 %0, %0, %0 "
+                "quad_perm:[2,3,0,1] "
+                "row_mask:0xf bank_mask:0xf bound_ctrl:1"
+                : "+v"(x)
+            );
+            return x;
+
+        case ~1:
+            asm(
+                "v_or_b32 %0, %0, %0 "
+                "quad_perm:[1,0,3,2] "
+                "row_mask:0xf bank_mask:0xf bound_ctrl:1"
+                : "+v"(x)
+            );
+            return x;
+
+        default:
+            return x | __shfl_xor(x, offset, width);
+    }
+
+#else
+
+    switch (~offset) {
+        case ~16: {
+            const uint32_t y =
+                hip_ds_swizzle<0x401f>(x);
+
+            return x | y;
+        }
+
+        case ~8:
+            asm(
+                "v_or_b32 %0, %0, %0 "
+                "row_xmask:8 "
+                "row_mask:0xf bank_mask:0xf bound_ctrl:1"
+                : "+v"(x)
+            );
+            return x;
+
+        case ~4:
+            asm(
+                "v_or_b32 %0, %0, %0 "
+                "row_xmask:4 "
+                "row_mask:0xf bank_mask:0xf bound_ctrl:1"
+                : "+v"(x)
+            );
+            return x;
+
+        case ~2:
+            asm(
+                "v_or_b32 %0, %0, %0 "
+                "row_xmask:2 "
+                "row_mask:0xf bank_mask:0xf bound_ctrl:1"
+                : "+v"(x)
+            );
+            return x;
+
+        case ~1:
+            asm(
+                "v_or_b32 %0, %0, %0 "
+                "row_xmask:1 "
+                "row_mask:0xf bank_mask:0xf bound_ctrl:1"
+                : "+v"(x)
+            );
+            return x;
+
+        default:
+            return x | __shfl_xor(x, offset, width);
+    }
+
+#endif
+
+#else
+    return x |__shfl_xor_sync(0xffffffff, x, offset, width);
+#endif
+}
 
 static constexpr __device__ int ggml_cuda_get_physical_warp_size() {
 #if defined(GGML_USE_HIP) && (defined(__GFX9__) || defined(__GFX8__))
@@ -686,19 +793,56 @@ static __device__ __forceinline__ int warp_reduce_any(int x) {
     }
 }
 
+static __device__ __forceinline__ float ggml_cuda_quiet_nan(float x) {
+    asm volatile(
+        "v_max_f32 %0, %0, %0"
+        : "+v"(x)
+    );
+
+    return x;
+}
+
 template<int width = WARP_SIZE>
 static __device__ __forceinline__ float warp_reduce_max(float x) {
 #if defined(GGML_USE_HIP)
+
     if constexpr (width == ggml_cuda_get_physical_warp_size()) {
-        return __builtin_amdgcn_wave_reduce_fmax_f32(x, 2); // 2 == force DPP
+        x = ggml_cuda_quiet_nan(x);
+
+        return __builtin_amdgcn_wave_reduce_fmax_f32(x, 2);
     }
-#endif
-    x = fmaxf(x, x);
-    #pragma unroll
+
+    uint32_t bits = __builtin_bit_cast(uint32_t, x);
+    const uint32_t abs_bits = bits & 0x7fffffffu;
+    uint32_t valid = 0u - uint32_t(abs_bits <= 0x7f800000u);
+    constexpr uint32_t neg_inf = 0xff800000u;
+
+    bits = (bits & valid) | (neg_inf & ~valid);
+    x = __builtin_bit_cast(float, bits);
+
+#pragma unroll
     for (int offset = width/2; offset > 0; offset >>= 1) {
         x = ggml_cuda_max_xor_sync<width>(x, offset);
+        valid = ggml_cuda_or_xor_sync<width>(valid, offset);
     }
+
+    bits = __builtin_bit_cast(uint32_t, x);
+    constexpr uint32_t canonical_nan = 0x7fc00000u;
+    bits = (bits & valid) | (canonical_nan & ~valid);
+
+    return __builtin_bit_cast(float, bits);
+
+#else
+
+#pragma unroll
+    for (int offset = width/2; offset > 0; offset >>= 1) {
+        x = fmaxf(x, ggml_cuda_shfl_xor_sync<width>(x, offset)
+        );
+    }
+
     return x;
+
+#endif
 }
 
 
@@ -858,18 +1002,85 @@ static __device__ __forceinline__ half2 ggml_cuda_hmax2(const half2 a, const hal
 #endif
 }
 
+#if defined(GGML_USE_HIP)
+
+static __device__ __forceinline__
+half2 ggml_cuda_hmax2_raw(const half2 a, const half2 b) {
+    half2 r = a;
+
+    asm(
+        "v_pk_max_f16 %0, %0, %1"
+        : "+v"(r)
+        : "v"(b)
+    );
+
+    return r;
+}
+
+#endif
+
 template<int width = WARP_SIZE>
 static __device__ __forceinline__ half2 warp_reduce_max(half2 x) {
-#if !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_PASCAL || defined(GGML_USE_HIP)
+#if defined(GGML_USE_HIP)
+
+    // Preserve the width == 1 behavior: no reduction means no modification.
+    if constexpr (width == 1) {
+        return x;
+    }
+
+    uint32_t bits = __builtin_bit_cast(uint32_t, x);
+
+    // Remove the sign bit. FP16:
+    //   Inf = 0x7c00
+    //   NaN > 0x7c00
+    const uint32_t lo_abs = bits & 0x00007fffu;
+    const uint32_t hi_abs = (bits >> 16) & 0x00007fffu;
+
+    const uint32_t lo_valid = (0u - uint32_t(lo_abs <= 0x7c00u)) & 0x0000ffffu;
+    const uint32_t hi_valid = (0u - uint32_t(hi_abs <= 0x7c00u)) & 0xffff0000u;
+
+    uint32_t valid = lo_valid | hi_valid;
+
+    // NaNs are replaced by -Inf, the neutral element for max.
+    constexpr uint32_t neg_inf2 = 0xfc00fc00u;
+
+    bits = (bits & valid) | (neg_inf2 & ~valid);
+    x = __builtin_bit_cast(half2, bits);
+
 #pragma unroll
-   for (int offset = width/2; offset > 0; offset >>= 1) {
-       x = ggml_cuda_hmax2(x, ggml_cuda_shfl_xor_sync<width>(x, offset));
-   }
-   return x;
+    for (int offset = width/2; offset > 0; offset >>= 1) {
+        const half2 y = ggml_cuda_shfl_xor_sync<width>(x, offset);
+
+        const uint32_t valid_y =  ggml_cuda_shfl_xor_sync<width>(valid, offset);
+
+        x = ggml_cuda_hmax2_raw(x, y);
+        valid |= valid_y;
+    }
+
+    bits = __builtin_bit_cast(uint32_t, x);
+
+    // If every input of one packed component was NaN, reproduce __hmax's
+    // canonical NaN result for that component.
+    constexpr uint32_t canonical_nan2 = 0x7fff7fffu;
+    bits = (bits & valid) | (canonical_nan2 & ~valid);
+
+    return __builtin_bit_cast(half2, bits);
+
 #else
-   GGML_UNUSED(x);
-   NO_DEVICE_CODE;
-#endif // !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_PASCAL || defined(GGML_USE_HIP)
+
+#if __CUDA_ARCH__ >= GGML_CUDA_CC_PASCAL
+#pragma unroll
+    for (int offset = width/2; offset > 0; offset >>= 1) {
+        x = ggml_cuda_hmax2(x, ggml_cuda_shfl_xor_sync<width>(x, offset)
+        );
+    }
+    return x;
+#else
+    GGML_UNUSED(x);
+    NO_DEVICE_CODE;
+#endif
+
+#endif
 }
 
 #if (defined(CUDART_VERSION) && CUDART_VERSION < CUDART_HMASK) || defined(GGML_USE_HIP) || \
