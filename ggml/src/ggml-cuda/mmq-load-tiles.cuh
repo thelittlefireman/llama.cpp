@@ -1107,7 +1107,10 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
     constexpr int nrows = warp_size / threads_per_row;
     const int kqsx = warp_size > threads_per_row ? threadIdx.x % threads_per_row : threadIdx.x;
 
-#pragma unroll
+#if !defined(GGML_USE_HIP)
+    // on HIP __builtin_amdgcn_perm need more VGRP registers, avoid spill by do not unroll the first loop
+    #pragma unroll
+#endif
     for (int i0 = 0; i0 < I; i0 += nwarps * nrows) {
         int i = i0 + threadIdx.y*nrows + threadIdx.x/threads_per_row;
 
@@ -1172,7 +1175,10 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
     constexpr int nrows = warp_size / threads_per_row;
     const int kqsx = threadIdx.x % threads_per_row;
 
-#pragma unroll
+#if !defined(GGML_USE_HIP)
+    // on HIP __builtin_amdgcn_perm need more VGRP registers, avoid spill by do not unroll the first loop
+    #pragma unroll
+#endif
     for (int i0 = 0; i0 < I; i0 += nwarps * nrows) {
         int i = i0 + threadIdx.y*nrows + threadIdx.x/threads_per_row;
 
@@ -1237,7 +1243,10 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
     constexpr int nrows = warp_size / threads_per_row;
     const int kqsx = threadIdx.x % threads_per_row;
 
-#pragma unroll
+#if !defined(GGML_USE_HIP)
+    // on HIP __builtin_amdgcn_perm need more VGRP registers, avoid spill by do not unroll the first loop
+    #pragma unroll
+#endif
     for (int i0 = 0; i0 < I; i0 += nwarps * nrows) {
         int i = i0 + threadIdx.y*nrows + threadIdx.x/threads_per_row;
 

@@ -326,7 +326,7 @@ static __global__ void lightning_indexer_kernel_vec(
         __syncthreads();
 
         // phase 3 - calculate lightning indexer scores
-
+#pragma unroll 0
         for (int i_head_inner = 0; i_head_inner < N_HEAD_INNER; ++i_head_inner) {
             const float w_val = w_shared[i_head_inner];
             float qk[K_VECS_PER_WARP] = { 0.0f };

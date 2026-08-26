@@ -723,7 +723,11 @@ static __device__ __forceinline__ void flash_attn_tile_iter(
         __syncthreads();
 
 #ifdef FAST_FP16_AVAILABLE
-#pragma unroll
+#if defined(GGML_USE_HIP)
+ #pragma unroll 4
+#else
+ #pragma unroll
+#endif
         for (int k1 = 0; k1 < nbatch_V; k1 += np) {
             __align__(16) half2 V_k[(DVp/2)/warp_size];
             __align__(16) half2 KQ_k[cpw];
@@ -755,7 +759,11 @@ static __device__ __forceinline__ void flash_attn_tile_iter(
             }
         }
 #else
-#pragma unroll
+#if defined(GGML_USE_HIP)
+ #pragma unroll 4
+#else
+ #pragma unroll
+#endif
         for (int k1 = 0; k1 < nbatch_V; k1 += np) {
             __align__(16) float2 V_k[(DVp/2)/warp_size];
             __align__(16) float  KQ_k[cpw];
