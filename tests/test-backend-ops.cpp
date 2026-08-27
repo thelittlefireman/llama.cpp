@@ -10301,14 +10301,38 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
     test_cases.emplace_back(new test_cumsum(GGML_TYPE_F32, { 2048, 16, 5, 4 }));
     test_cases.emplace_back(new test_cumsum(GGML_TYPE_F32, { 20000, 10, 4, 1 }));
 
-    for (int bs : {1, 2, 3, 4, 5, 8, 512}) {
+    constexpr int k = 14336;
+
+    for (int bs : {1, 2, 3, 4, 5, 8, 16, 24, 32, 40, 48, 64, 512}) {
         for (ggml_type type_a : all_types) {
             for (ggml_type type_b : {GGML_TYPE_F32}) {
-                test_cases.emplace_back(new test_mul_mat(type_a, type_b, 4096, bs, 14336, {1,  1}, {1, 1}));
+                test_cases.emplace_back(new test_mul_mat(type_a, type_b, 4096, bs, k, {1,  1}, {1, 1}));
             }
         }
     }
 
+    // fallback=true : J=16,32,64
+    for (int n : {16, 32, 64}) {
+        for (ggml_type type : all_types) {
+            test_cases.emplace_back( new test_mul_mat(type, GGML_TYPE_F32, 4097, n, k, {1, 1}, {1, 1}));
+        }
+    }
+
+    // Q8_0: force the selection of J=72,80,...,128.
+    for (int m : {4096, 4160, 4097}) {
+        for (int J : {72, 80, 88, 96, 104, 112, 120, 128}) {
+            const int n = 2 * J - 15;
+            test_cases.emplace_back( new test_mul_mat(GGML_TYPE_Q8_0, GGML_TYPE_F32, m, n, k, {1, 1}, {1, 1}));
+        }
+    }
+
+    for (int bs : {32, 64}) {
+        for (ggml_type type_a : all_types) {
+            for (ggml_type type_b : {GGML_TYPE_F32}) {
+                test_cases.emplace_back(new test_mul_mat(type_a, type_b, 4160, bs, k, {1,  1}, {1, 1}));
+            }
+        }
+    }
     // qwen3-30b-a3b
     for (int bs : {1, 4, 8, 32, 64, 128, 256, 512}) {
         for (ggml_type type_a : {GGML_TYPE_F32, GGML_TYPE_F16, GGML_TYPE_Q4_0, GGML_TYPE_Q8_0, GGML_TYPE_Q4_K, GGML_TYPE_Q6_K, GGML_TYPE_IQ2_XS}) {
