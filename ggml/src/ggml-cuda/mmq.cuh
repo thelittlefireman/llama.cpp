@@ -1515,6 +1515,7 @@ template <ggml_type type, bool fallback>
 void mul_mat_q_switch_J(ggml_backend_cuda_context & ctx, const mmq_args & args, cudaStream_t stream) {
     const int    id    = ggml_cuda_get_device();
     const int    cc    = ggml_cuda_info().devices[id].cc;
+    const int    nsm   = ggml_cuda_info().devices[id].nsm;
     const size_t smpbo = ggml_cuda_info().devices[id].smpbo;
 
     int J_best        = 0;
@@ -1531,6 +1532,24 @@ void mul_mat_q_switch_J(ggml_backend_cuda_context & ctx, const mmq_args & args, 
         }
 
         const int ntiles_x = (args.ncols_max + config.J - 1) / config.J;
+
+        // Wide GCN tiles are useful only if the local grid can
+        // provide at least one workgroup per CU.
+        if (GGML_CUDA_CC_IS_GCN(cc) && config.J > 64) {
+            // MoE uses small per-expert grids that are overestimated
+            // by the global dimensions. Keep J <= 64 for this path.
+            if (args.ids_dst != nullptr) {
+                continue;
+            }
+
+            const int64_t ntiles_y = (args.nrows_x + config.I - 1) / config.I;
+
+            const int64_t total_tiles = ntiles_y * int64_t(ntiles_x) * args.nchannels_y * args.nsamples_y;
+
+            if (total_tiles < int64_t(nsm)) {
+                continue;
+            }
+        }
 
         if (ntiles_x < ntiles_J_best) {
             J_best = J;
