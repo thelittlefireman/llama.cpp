@@ -348,8 +348,8 @@ static __device__ __forceinline__ void quantize_q8_1_to_shared(
 #pragma unroll
     for (int mask = QI8_1/2; mask > 0; mask >>= 1) {
         amax = fmaxf(amax, ggml_cuda_shfl_xor_sync<32>(amax, mask));
-        sum +=             ggml_cuda_shfl_xor_sync<32>(sum,  mask);
     }
+    sum = warp_reduce_sum_lane0<QK8_1>(sum);
 
     const float d = amax / 127;
     int q32 = 0;
