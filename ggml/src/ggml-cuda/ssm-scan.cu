@@ -212,7 +212,7 @@ __global__ void __launch_bounds__(d_state, 1)
         }
 
         // parallel accumulation for output
-        state_sum = warp_reduce_sum(state_sum);
+        state_sum = warp_reduce_sum_lane0(state_sum);
 
         if (lane == 0) {
             y_warp[i * stride_y] = state_sum;

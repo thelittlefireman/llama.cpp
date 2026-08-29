@@ -505,6 +505,46 @@ static __device__ __forceinline__ float warp_reduce_sum(float x) {
     return x;
 }
 
+template<int width, int offset, typename T>
+static __device__ __forceinline__ T warp_reduce_sum_lane0_impl(T x) {
+    static_assert(std::is_same_v<T, float> || std::is_same_v<T, int>, "warp_reduce_sum_lane0_impl only supports float and int");
+    if constexpr (offset == 0) {
+        return x;
+    } else {
+#if defined(GGML_USE_HIP) && defined(GCN)
+        // XOR4 needs two DPP instructions on GCN, while lane 0 only needs row_shl:4
+        if constexpr (offset == 4) {
+            x += hip_update_dpp<0x104>(x); // row_shl:4
+        } else {
+            x += ggml_cuda_shfl_xor_sync<width>(x, offset);
+        }
+#else
+        x += ggml_cuda_shfl_xor_sync<width>(x, offset);
+#endif
+        return warp_reduce_sum_lane0_impl<width, offset / 2>(x);
+    }
+}
+
+// Unlike warp_reduce_sum(), only the first lane of each width-sized subgroup
+// is guaranteed to contain the complete sum.
+template<int width = WARP_SIZE>
+static __device__ __forceinline__ float warp_reduce_sum_lane0(float x) {
+    static_assert(width > 0 && width <= 64 &&  (width & (width - 1)) == 0, "width must be a power of two <= 64");
+    return warp_reduce_sum_lane0_impl<width, width / 2>(x);
+}
+
+template<int width = WARP_SIZE>
+static __device__ __forceinline__ int warp_reduce_sum_lane0(int x) {
+    static_assert(width > 0 && width <= 64 &&  (width & (width - 1)) == 0, "width must be a power of two <= 64");
+#if !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_AMPERE
+        if constexpr (width == WARP_SIZE) {
+            return __reduce_add_sync(0xffffffff, x);
+        }
+#endif // !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_AMPERE
+    return warp_reduce_sum_lane0_impl<width, width / 2>(x);
+}
+
+
 template<int width = WARP_SIZE>
 static __device__ __forceinline__ float2 warp_reduce_sum(float2 a) {
 #pragma unroll
@@ -693,6 +733,28 @@ static __device__ T block_reduce(T val, [[maybe_unused]] T * shared_vals) {
 
     return val;
 }
+
+// Reduce a block sum to thread 0. Values returned to all other threads are unspecified.
+template <const unsigned int block_size_template = 0, typename T>
+static __device__ T block_reduce_sum_lane0(T val, [[maybe_unused]] T * shared_vals) {
+    val                           = warp_reduce_sum_lane0(val);
+    const unsigned int block_size = block_size_template == 0 ? blockDim.x : block_size_template;
+    if (block_size > WARP_SIZE) {
+        assert((block_size <= 1024) && (block_size % WARP_SIZE) == 0);
+        const int warp_id = threadIdx.x / WARP_SIZE;
+        const int lane_id = threadIdx.x % WARP_SIZE;
+        if (lane_id == 0) {
+            shared_vals[warp_id] = val;
+        }
+        __syncthreads();
+        if (warp_id == 0) {
+            val = lane_id < (static_cast<int>(block_size) / WARP_SIZE) ? shared_vals[lane_id] : block_reduce_policy<block_reduce_method::SUM, T>::sentinel();
+            val = warp_reduce_sum_lane0(val);
+        }
+    }
+    return val;
+}
+
 
 static __device__ __forceinline__ half ggml_cuda_hmax(const half a, const half b) {
 #ifdef FP16_AVAILABLE
