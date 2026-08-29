@@ -215,7 +215,7 @@ static __device__ void soft_max_f32_parallelize_cols_single_row(const float * __
     }
 
     // Reduce divisor within CTA
-    tmp_expf = block_reduce<block_reduce_method::SUM>(tmp_expf, shared_vals_sum);
+    tmp_expf = block_reduce_sum_lane0(tmp_expf, shared_vals_sum);
 
     // Store CTA-level sum to GMEM
     if (tid == 0) {

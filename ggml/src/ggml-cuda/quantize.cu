@@ -89,7 +89,7 @@ static __global__ void quantize_q8_1(
     const float  d = amax / 127.0f;
     const int8_t q = amax == 0.0f ? 0 : roundf(xi / d);
 
-    const int sum = warp_reduce_sum<QK8_1>((int) q);
+    const int sum = warp_reduce_sum_lane0<QK8_1>((int) q);
 
     y[ib].qs[iqs] = q;
 
@@ -513,10 +513,7 @@ static __global__ void quantize_mmq_q8_1(
         int sum_q = int(q.x) + int(q.y) + int(q.z) + int(q.w);
 
         // Calculate sums across vals_per_sum/4 threads.
-#pragma unroll
-        for (int offset = vals_per_sum/8; offset > 0; offset >>= 1) {
-            sum_q +=  ggml_cuda_shfl_xor_sync<WARP_SIZE>(sum_q, offset);
-        }
+        sum_q = warp_reduce_sum_lane0<vals_per_sum/4>(sum_q);
 
         sum = d * float(sum_q);
     }
