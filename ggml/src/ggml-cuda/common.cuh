@@ -649,6 +649,40 @@ static __device__ T block_reduce(T val, [[maybe_unused]] T * shared_vals) {
     return val;
 }
 
+static __device__ __forceinline__ float block_reduce_sum_lane0(float val, float * shared_vals) {
+    val = warp_reduce_sum(val);
+
+    if (blockDim.x <= WARP_SIZE) {
+        return val;
+    }
+
+    const int warp_id = threadIdx.x / WARP_SIZE;
+    const int lane_id = threadIdx.x % WARP_SIZE;
+
+    if (lane_id == 0) {
+        shared_vals[warp_id] = val;
+    }
+
+    __syncthreads();
+
+    if (warp_id != 0) {
+        return val;
+    }
+
+    const int nwarps = blockDim.x / WARP_SIZE;
+    val = lane_id < nwarps ? shared_vals[lane_id] : 0.0f;
+
+    if (blockDim.x == 128) {
+        return warp_reduce_sum<4>(val);
+    }
+
+    if (blockDim.x == 512) {
+        return warp_reduce_sum<16>(val);
+    }
+
+    return warp_reduce_sum(val);
+}
+
 static __device__ __forceinline__ half ggml_cuda_hmax(const half a, const half b) {
 #ifdef FP16_AVAILABLE
 

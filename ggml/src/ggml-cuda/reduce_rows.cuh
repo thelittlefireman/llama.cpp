@@ -33,7 +33,7 @@ static __global__ void reduce_rows_f32(const float * x_ptr, float * dst_ptr, con
 
     // sum up partial sums
     __shared__ float shared_vals[32];
-    sum = block_reduce<block_reduce_method::SUM>(sum, shared_vals);
+    sum = block_reduce_sum_lane0(sum, shared_vals);
 
     if (col != 0) {
         return;

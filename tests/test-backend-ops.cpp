@@ -10444,6 +10444,24 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
         test_cases.emplace_back(new test_sum(GGML_TYPE_F32, it));
     }
 
+    const std::array<std::array<int64_t, 4>, 5> norm_cases = {{
+        {  256, 8192, 1, 1 },
+        {  768, 4096, 1, 1 },
+        { 1024, 2048, 1, 1 },
+        { 4096, 1024, 1, 1 },
+        { 8192,  512, 1, 1 },
+    }};
+
+    for (const auto & ne : norm_cases) {
+        test_cases.emplace_back(new test_norm    (GGML_TYPE_F32, ne));
+        test_cases.emplace_back(new test_rms_norm(GGML_TYPE_F32, ne));
+        test_cases.emplace_back(new test_l2_norm (GGML_TYPE_F32, ne));
+    }
+
+    test_cases.emplace_back(new test_group_norm(GGML_TYPE_F32, { 256, 1,  64, 1 }, 32));
+    test_cases.emplace_back(new test_group_norm(GGML_TYPE_F32, { 256, 1, 128, 1 }, 32));
+    test_cases.emplace_back(new test_group_norm(GGML_TYPE_F32, {  64, 64, 320, 1 }, 32));
+
     test_cases.emplace_back(new test_argsort(GGML_TYPE_F32, {65000,  16, 1, 1}));
     test_cases.emplace_back(new test_argsort(GGML_TYPE_F32, {200000, 1,  1, 1}));
     test_cases.emplace_back(new test_argsort(GGML_TYPE_F32, {200000, 16, 1, 1}));
