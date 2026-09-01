@@ -56,7 +56,7 @@ static __global__ void reduce_rows_f32(const float * x_ptr, float * dst_ptr, con
             } else {
                 temp[j] = 0.0f;
             }
-            i += block_size;
+            i += blockDim.x;
         }
         for (int j = 0; j < num_unroll; ++j) {
             sum_temp[j] += temp[j];
