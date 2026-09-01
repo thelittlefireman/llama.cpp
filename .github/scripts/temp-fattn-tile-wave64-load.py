@@ -33,8 +33,8 @@ new = '''    constexpr int ncols = ncols1*ncols2;
 assert text.count(old) == 1
 text = text.replace(old, new)
 
-old = 'flash_attn_tile_iter_KQ<warp_size, nwarps, ncols1, ncols2, DKQ, nbatch_fa, nbatch_K, use_logit_softcap, oob_check>'
-new = 'flash_attn_tile_iter_KQ<warp_size, nwarps, ncols1, ncols2, DKQ, DV, nbatch_fa, nbatch_K, use_logit_softcap, oob_check>'
+old = 'flash_attn_tile_iter_KQ<warp_size, nwarps, ncols1, ncols2, DKQ, '
+new = 'flash_attn_tile_iter_KQ<warp_size, nwarps, ncols1, ncols2, DKQ, DV, '
 assert text.count(old) == 2
 text = text.replace(old, new)
 
