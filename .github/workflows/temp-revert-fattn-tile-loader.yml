@@ -1,0 +1,31 @@
+name: Temporary revert fattn tile wave64 loader
+
+on:
+  push:
+    branches:
+      - feature_change_to_warp_size64
+
+permissions:
+  contents: write
+
+jobs:
+  revert-loader:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature_change_to_warp_size64
+          fetch-depth: 0
+      - name: Restore pre-loader fattn tile
+        run: |
+          git checkout 9fc3e397bf529a2452bf33c1b4c1f870cabee5f1 -- ggml/src/ggml-cuda/fattn-tile.cuh
+          rm .github/workflows/temp-revert-fattn-tile-loader.yml
+      - name: Commit revert
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add -A
+          git diff --cached --check
+          git commit -m "hip: restore logical warp32 fattn tile KV loads"
+          git push origin HEAD:feature_change_to_warp_size64
