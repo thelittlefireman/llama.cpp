@@ -438,7 +438,8 @@ static __global__ void flash_attn_ext_vec(
         }
 
         float kqmax_new = KQ_max_shared[j_VKQ][threadIdx.x];
-        kqmax_new = warp_reduce_max(kqmax_new);
+        kqmax_new = warp_reduce_max<nwarps>(kqmax_new);
+        kqmax_new = __shfl_sync(0xffffffff, kqmax_new, 0, WARP_SIZE);
         const float kqmax_scale = expf(KQ_max[j_VKQ] - kqmax_new);
         KQ_max[j_VKQ] = kqmax_new;
 
@@ -485,7 +486,8 @@ static __global__ void flash_attn_ext_vec(
 
         if (nthreads <= D || tid < D) {
             KQ_sum[j_VKQ] = KQ_sum_shared[j_VKQ][threadIdx.x];
-            KQ_sum[j_VKQ] = warp_reduce_sum(KQ_sum[j_VKQ]);
+            KQ_sum[j_VKQ] = warp_reduce_sum<nwarps>(KQ_sum[j_VKQ]);
+            KQ_sum[j_VKQ] = __shfl_sync(0xffffffff, KQ_sum[j_VKQ], 0, WARP_SIZE);
 
 #pragma unroll
             for (int i0 = 0; i0 < D; i0 += nthreads) {
