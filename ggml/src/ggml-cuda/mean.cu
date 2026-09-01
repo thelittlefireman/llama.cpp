@@ -68,10 +68,14 @@ void ggml_cuda_op_mean(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     if ((nrows / nsm) < 2) {
         const dim3 block_dims(512, 1, 1);
         const ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(block_nums, block_dims, 0, stream);
-        ggml_cuda_kernel_launch(reduce_rows_f32</*norm=*/true>, launch_params, src0_d, dst_d, ncols);
-    } else {
-        const dim3 block_dims(ncols < 1024 ? 32 : 128, 1, 1);
+        ggml_cuda_kernel_launch(reduce_rows_f32</*norm=*/true, 512>, launch_params, src0_d, dst_d, ncols);
+    } else if (ncols < 1024) {
+        const dim3 block_dims(32, 1, 1);
         const ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(block_nums, block_dims, 0, stream);
-        ggml_cuda_kernel_launch(reduce_rows_f32</*norm=*/true>, launch_params, src0_d, dst_d, ncols);
+        ggml_cuda_kernel_launch(reduce_rows_f32</*norm=*/true, 32>, launch_params, src0_d, dst_d, ncols);
+    } else {
+        const dim3 block_dims(128, 1, 1);
+        const ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(block_nums, block_dims, 0, stream);
+        ggml_cuda_kernel_launch(reduce_rows_f32</*norm=*/true, 128>, launch_params, src0_d, dst_d, ncols);
     }
 }
