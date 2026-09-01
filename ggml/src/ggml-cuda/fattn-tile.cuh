@@ -509,7 +509,7 @@ static __device__ __forceinline__ void flash_attn_tile_load_tile(
 }
 
 // Function that performs a single iteration in for the KQ matrix multiplication:
-template <int warp_size, int nwarps, int ncols1, int ncols2, int DKQ, int nbatch_fa, int nbatch_K,
+template <int warp_size, int nwarps, int ncols1, int ncols2, int DKQ, int DV, int nbatch_fa, int nbatch_K,
     bool use_logit_softcap, bool oob_check, typename T_vec_dot>
 static __device__ __forceinline__ void flash_attn_tile_iter_KQ(
         T_vec_dot   * const Q_tmp,
@@ -527,8 +527,12 @@ static __device__ __forceinline__ void flash_attn_tile_iter_KQ(
     constexpr int cpw   = ncols > nwarps ? ncols/nwarps : 1; // Q columns per warp
     constexpr int np    = nwarps > ncols ? nwarps/ncols : 1; // number of parallel warps per Q column
 
-    flash_attn_tile_load_tile<warp_size, nwarps, nbatch_fa, nbatch_K, cpy_ne, oob_check>
-        (K_h2 + int64_t(k_VKQ_0)*stride_K2 + k_KQ_0/2, KV_tmp, stride_K2, k_VKQ_sup, lane_id, warp_id);
+    constexpr int load_warp_size = ggml_cuda_fattn_tile_get_physical_warp_size_device(DKQ, DV);
+    constexpr int load_nwarps    = nwarps*warp_size/load_warp_size;
+    static_assert((nwarps*warp_size) % load_warp_size == 0, "bad load warp size");
+
+    flash_attn_tile_load_tile<load_warp_size, load_nwarps, nbatch_fa, nbatch_K, cpy_ne, oob_check>
+        (K_h2 + int64_t(k_VKQ_0)*stride_K2 + k_KQ_0/2, KV_tmp, stride_K2, k_VKQ_sup, threadIdx.x, threadIdx.y);
     __syncthreads();
 
 #ifdef FAST_FP16_AVAILABLE
@@ -612,6 +616,10 @@ static __device__ __forceinline__ void flash_attn_tile_iter(
     constexpr int cpw   = ncols > nwarps ? ncols/nwarps : 1; // Q columns per warp
     constexpr int np    = nwarps > ncols ? nwarps/ncols : 1; // number of parallel warps per Q column
 
+    constexpr int load_warp_size = ggml_cuda_fattn_tile_get_physical_warp_size_device(DKQ, DV);
+    constexpr int load_nwarps    = nwarps*warp_size/load_warp_size;
+    static_assert((nwarps*warp_size) % load_warp_size == 0, "bad load warp size");
+
     constexpr int DVp = (DV + 2*warp_size - 1) & ~(2*warp_size - 1); // DV padded to multiple of 2*warp_size.
 
     // KQ_cs == KQ chunk size, number of KQ values in j direction to store as one contiguous chunk in memory.
@@ -636,12 +644,12 @@ static __device__ __forceinline__ void flash_attn_tile_iter(
     constexpr int nbatch_K_last = DKQ % nbatch_K;
 #pragma unroll
     for (int k_KQ_0 = 0; k_KQ_0 < DKQ - nbatch_K_last; k_KQ_0 += nbatch_K) {
-        flash_attn_tile_iter_KQ<warp_size, nwarps, ncols1, ncols2, DKQ, nbatch_fa, nbatch_K, use_logit_softcap, oob_check>(
+        flash_attn_tile_iter_KQ<warp_size, nwarps, ncols1, ncols2, DKQ, DV, nbatch_fa, nbatch_K, use_logit_softcap, oob_check>(
             Q_tmp, K_h2, KV_tmp, stride_K2, k_VKQ_0, k_VKQ_sup, k_KQ_0, KQ_acc, lane_id, warp_id);
     }
     if (nbatch_K_last > 0) {
         constexpr int k_KQ_0 = DKQ - nbatch_K_last;
-        flash_attn_tile_iter_KQ<warp_size, nwarps, ncols1, ncols2, DKQ, nbatch_fa, nbatch_K_last, use_logit_softcap, oob_check>(
+        flash_attn_tile_iter_KQ<warp_size, nwarps, ncols1, ncols2, DKQ, DV, nbatch_fa, nbatch_K_last, use_logit_softcap, oob_check>(
             Q_tmp, K_h2, KV_tmp, stride_K2, k_VKQ_0, k_VKQ_sup, k_KQ_0, KQ_acc, lane_id, warp_id);
     }
 
@@ -764,8 +772,8 @@ static __device__ __forceinline__ void flash_attn_tile_iter(
     static_assert(nbatch_V % np == 0, "bad nbatch_V");
 #pragma unroll
     for (int k0 = 0; k0 < nbatch_fa; k0 += nbatch_V) {
-        flash_attn_tile_load_tile<warp_size, nwarps, nbatch_V, DV, 0, oob_check>
-            (V_h2 + int64_t(k_VKQ_0 + k0)*stride_V2, KV_tmp, stride_V2, k_VKQ_sup - k0, lane_id, warp_id);
+        flash_attn_tile_load_tile<load_warp_size, load_nwarps, nbatch_V, DV, 0, oob_check>
+            (V_h2 + int64_t(k_VKQ_0 + k0)*stride_V2, KV_tmp, stride_V2, k_VKQ_sup - k0, threadIdx.x, threadIdx.y);
         __syncthreads();
 
 #ifdef FAST_FP16_AVAILABLE
