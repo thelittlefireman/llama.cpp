@@ -1,0 +1,153 @@
+name: Temporary logical warp32 tile patch
+
+on:
+  push:
+    branches:
+      - feature_change_to_warp_size64
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature_change_to_warp_size64
+          fetch-depth: 0
+
+      - name: Apply logical warp32 mapping on physical wave64
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('ggml/src/ggml-cuda/fattn-tile.cuh')
+          text = path.read_text()
+
+          old = '''static constexpr __host__ __device__ uint32_t ggml_cuda_fattn_tile_get_config_gcn(const int DKQ, const int DV, const int ncols) {
+              GGML_CUDA_FATTN_TILE_CONFIG_CASE(256, 256, 16, 256, 2, 64, 128)
+              GGML_CUDA_FATTN_TILE_CONFIG_CASE(256, 256, 32, 256, 2, 64, 128)
+
+              return ggml_cuda_fattn_tile_get_config_amd(DKQ, DV, ncols);
+          }'''
+          new = '''static constexpr __host__ __device__ uint32_t ggml_cuda_fattn_tile_get_config_gcn(const int DKQ, const int DV, const int ncols) {
+              // Add GCN-specific cases here after benchmarking. Keep the generic AMD table as the fallback.
+              return ggml_cuda_fattn_tile_get_config_amd(DKQ, DV, ncols);
+          }'''
+          assert text.count(old) == 1
+          text = text.replace(old, new)
+
+          text = text.replace('ggml_cuda_fattn_tile_get_warp_size_host', 'ggml_cuda_fattn_tile_get_physical_warp_size_host')
+          text = text.replace('ggml_cuda_fattn_tile_get_warp_size_device', 'ggml_cuda_fattn_tile_get_physical_warp_size_device')
+
+          def segment_between(source, start, end):
+              i = source.index(start)
+              j = source.index(end, i)
+              return i, j, source[i:j]
+
+          load1 = '''template<int warp_size, int nwarps, int I, int J, int J_padding, bool oob_check>
+          static __device__ __forceinline__ void flash_attn_tile_load_tile(
+                  const half2 * const __restrict__ KV, half2 * const __restrict__ tile_KV, const int stride_KV, const int i_sup) {'''
+          load2 = '''template<int warp_size, int nwarps, int I, int J, int J_padding, bool oob_check>
+          static __device__ __forceinline__ void flash_attn_tile_load_tile(
+                  const half2 * const __restrict__ KV, float * const __restrict__ tile_KV, const int stride_KV, const int i_sup) {'''
+          load1_new = load1.replace('const int i_sup) {', 'const int i_sup, const int lane_id, const int warp_id) {')
+          load2_new = load2.replace('const int i_sup) {', 'const int i_sup, const int lane_id, const int warp_id) {')
+          assert text.count(load1) == 1 and text.count(load2) == 1
+          text = text.replace(load1, load1_new).replace(load2, load2_new)
+
+          start = load1_new
+          end = load2_new
+          i, j, seg = segment_between(text, start, end)
+          seg = seg.replace('threadIdx.x', 'lane_id').replace('threadIdx.y', 'warp_id')
+          text = text[:i] + seg + text[j:]
+
+          start = load2_new
+          end = '// Function that performs a single iteration in for the KQ matrix multiplication:'
+          i, j, seg = segment_between(text, start, end)
+          seg = seg.replace('threadIdx.x', 'lane_id').replace('threadIdx.y', 'warp_id')
+          text = text[:i] + seg + text[j:]
+
+          start = '// Function that performs a single iteration in for the KQ matrix multiplication:'
+          end = '// Function that performs a single iteration of the main loop over up to nbatch_fa tokens.'
+          i, j, seg = segment_between(text, start, end)
+          assert seg.count('float * KQ_acc) {') == 1
+          seg = seg.replace('float * KQ_acc) {', 'float * KQ_acc, const int lane_id, const int warp_id) {')
+          seg = seg.replace('threadIdx.x', 'lane_id').replace('threadIdx.y', 'warp_id')
+          assert seg.count('(K_h2 + int64_t(k_VKQ_0)*stride_K2 + k_KQ_0/2, KV_tmp, stride_K2, k_VKQ_sup);') == 1
+          seg = seg.replace('(K_h2 + int64_t(k_VKQ_0)*stride_K2 + k_KQ_0/2, KV_tmp, stride_K2, k_VKQ_sup);',
+                            '(K_h2 + int64_t(k_VKQ_0)*stride_K2 + k_KQ_0/2, KV_tmp, stride_K2, k_VKQ_sup, lane_id, warp_id);')
+          text = text[:i] + seg + text[j:]
+
+          start = '// Function that performs a single iteration of the main loop over up to nbatch_fa tokens.'
+          end = 'template<int DKQ, int DV, int ncols1, int ncols2, bool use_logit_softcap> // D == head size'
+          i, j, seg = segment_between(text, start, end)
+          assert seg.count('const int col_Q_0) {') == 1
+          seg = seg.replace('const int col_Q_0) {', 'const int col_Q_0, const int lane_id, const int warp_id) {')
+          seg = seg.replace('threadIdx.x', 'lane_id').replace('threadIdx.y', 'warp_id')
+          assert seg.count('k_KQ_0, KQ_acc);') == 2
+          seg = seg.replace('k_KQ_0, KQ_acc);', 'k_KQ_0, KQ_acc, lane_id, warp_id);')
+          assert seg.count('(V_h2 + int64_t(k_VKQ_0 + k0)*stride_V2, KV_tmp, stride_V2, k_VKQ_sup - k0);') == 1
+          seg = seg.replace('(V_h2 + int64_t(k_VKQ_0 + k0)*stride_V2, KV_tmp, stride_V2, k_VKQ_sup - k0);',
+                            '(V_h2 + int64_t(k_VKQ_0 + k0)*stride_V2, KV_tmp, stride_V2, k_VKQ_sup - k0, lane_id, warp_id);')
+          text = text[:i] + seg + text[j:]
+
+          start = 'template<int DKQ, int DV, int ncols1, int ncols2, bool use_logit_softcap> // D == head size'
+          end = 'template <int DKQ, int DV, int ncols2, bool use_logit_softcap>'
+          i, j, seg = segment_between(text, start, end)
+          old_geometry = '''    constexpr int ncols     = ncols1*ncols2;
+              constexpr int warp_size = ggml_cuda_fattn_tile_get_physical_warp_size_device(DKQ, DV);
+              constexpr int nwarps    = ggml_cuda_fattn_tile_get_nthreads (DKQ, DV, ncols1*ncols2) / warp_size;'''
+          new_geometry = '''    constexpr int ncols              = ncols1*ncols2;
+              constexpr int warp_size          = 32;
+              constexpr int physical_warp_size = ggml_cuda_fattn_tile_get_physical_warp_size_device(DKQ, DV);
+              constexpr int nwarps             = ggml_cuda_fattn_tile_get_nthreads(DKQ, DV, ncols1*ncols2) / warp_size;
+              static_assert(physical_warp_size % warp_size == 0, "bad physical warp size");
+
+              constexpr int logical_warps_per_physical_wave = physical_warp_size / warp_size;
+              const int lane_id = threadIdx.x % warp_size;
+              const int warp_id = threadIdx.y*logical_warps_per_physical_wave + threadIdx.x/warp_size;'''
+          assert seg.count(old_geometry) == 1
+          seg = seg.replace(old_geometry, new_geometry)
+          seg = seg.replace('threadIdx.x', 'lane_id').replace('threadIdx.y', 'warp_id')
+          mapping = '''    constexpr int logical_warps_per_physical_wave = physical_warp_size / warp_size;
+              const int lane_id = lane_id % warp_size;
+              const int warp_id = warp_id*logical_warps_per_physical_wave + lane_id/warp_size;'''
+          mapping_fixed = '''    constexpr int logical_warps_per_physical_wave = physical_warp_size / warp_size;
+              const int lane_id = threadIdx.x % warp_size;
+              const int warp_id = threadIdx.y*logical_warps_per_physical_wave + threadIdx.x/warp_size;'''
+          assert seg.count(mapping) == 1
+          seg = seg.replace(mapping, mapping_fixed)
+          assert seg.count('k_VKQ_0, k_VKQ_max, col_Q_0);') == 3
+          seg = seg.replace('k_VKQ_0, k_VKQ_max, col_Q_0);', 'k_VKQ_0, k_VKQ_max, col_Q_0, lane_id, warp_id);')
+          assert seg.count('threadIdx.') == 3
+          text = text[:i] + seg + text[j:]
+
+          start = 'template <int DKQ, int DV, int ncols2, bool use_logit_softcap>'
+          i = text.index(start)
+          seg = text[i:]
+          assert seg.count('const int warp_size = ggml_cuda_fattn_tile_get_physical_warp_size_host(DKQ, DV, cc);') == 1
+          seg = seg.replace('const int warp_size = ggml_cuda_fattn_tile_get_physical_warp_size_host(DKQ, DV, cc);',
+                            'const int physical_warp_size = ggml_cuda_fattn_tile_get_physical_warp_size_host(DKQ, DV, cc);')
+          seg = seg.replace('/ warp_size;', '/ physical_warp_size;')
+          seg = seg.replace(', warp_size);', ', physical_warp_size);')
+          text = text[:i] + seg
+
+          assert text.count('ggml_cuda_fattn_tile_get_physical_warp_size_host') == 2
+          assert text.count('ggml_cuda_fattn_tile_get_physical_warp_size_device') == 2
+          path.write_text(text)
+          Path('.github/workflows/temp-logical-warp32-tile-gcn.yml').unlink()
+          PY
+
+      - name: Commit experiment
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add ggml/src/ggml-cuda/fattn-tile.cuh .github/workflows/temp-logical-warp32-tile-gcn.yml
+          git diff --cached --check
+          git commit -m "hip: keep logical warp32 mapping in GCN fattn tile"
+          git push origin HEAD:feature_change_to_warp_size64
