@@ -1,0 +1,128 @@
+name: Temporary wave64 tile patch
+
+on:
+  push:
+    branches:
+      - feature_change_to_warp_size64
+
+permissions:
+  contents: write
+
+jobs:
+  patch:
+    if: github.actor != 'github-actions[bot]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: feature_change_to_warp_size64
+          fetch-depth: 0
+
+      - name: Apply GCN D256 wave64 experiment
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+
+          path = Path('ggml/src/ggml-cuda/fattn-tile.cuh')
+          text = path.read_text()
+
+          anchor = 'static constexpr __host__ __device__ uint32_t ggml_cuda_fattn_tile_get_config_amd_rdna(const int DKQ, const int DV, const int ncols) {'
+          insert = '''static constexpr __host__ __device__ uint32_t ggml_cuda_fattn_tile_get_config_gcn(const int DKQ, const int DV, const int ncols) {
+              GGML_CUDA_FATTN_TILE_CONFIG_CASE(256, 256, 16, 256, 2, 64, 128)
+              GGML_CUDA_FATTN_TILE_CONFIG_CASE(256, 256, 32, 256, 2, 64, 128)
+
+              return ggml_cuda_fattn_tile_get_config_amd(DKQ, DV, ncols);
+          }
+
+          ''' + anchor
+          assert text.count(anchor) == 1
+          text = text.replace(anchor, insert)
+
+          old = '''    if (GGML_CUDA_CC_IS_AMD(cc)) {
+                  if (GGML_CUDA_CC_IS_RDNA(cc)) {
+                      return ggml_cuda_fattn_tile_get_config_amd_rdna(DKQ, DV, ncols);
+                  }
+                  return ggml_cuda_fattn_tile_get_config_amd(DKQ, DV, ncols);
+              }'''
+          new = '''    if (GGML_CUDA_CC_IS_AMD(cc)) {
+                  if (GGML_CUDA_CC_IS_GCN(cc)) {
+                      return ggml_cuda_fattn_tile_get_config_gcn(DKQ, DV, ncols);
+                  }
+                  if (GGML_CUDA_CC_IS_RDNA(cc)) {
+                      return ggml_cuda_fattn_tile_get_config_amd_rdna(DKQ, DV, ncols);
+                  }
+                  return ggml_cuda_fattn_tile_get_config_amd(DKQ, DV, ncols);
+              }'''
+          assert text.count(old) == 1
+          text = text.replace(old, new)
+
+          old = '''#ifdef GGML_USE_HIP
+          #ifdef RDNA
+              return ggml_cuda_fattn_tile_get_config_amd_rdna(DKQ, DV, ncols);
+          #else
+              return ggml_cuda_fattn_tile_get_config_amd(DKQ, DV, ncols);
+          #endif // RDNA
+          #else'''
+          new = '''#ifdef GGML_USE_HIP
+          #ifdef GCN
+              return ggml_cuda_fattn_tile_get_config_gcn(DKQ, DV, ncols);
+          #elif defined(RDNA)
+              return ggml_cuda_fattn_tile_get_config_amd_rdna(DKQ, DV, ncols);
+          #else
+              return ggml_cuda_fattn_tile_get_config_amd(DKQ, DV, ncols);
+          #endif // defined(GCN) / defined(RDNA)
+          #else'''
+          assert text.count(old) == 1
+          text = text.replace(old, new)
+
+          anchor = '''static constexpr __device__ int ggml_cuda_fattn_tile_get_nbatch_K(const int DKQ, const int DV, const int ncols) {
+              return (ggml_cuda_fattn_tile_get_config(DKQ, DV, ncols) >> 23) & ((1 << 9) - 1);
+          }
+          '''
+          insert = anchor + '''
+          static int ggml_cuda_fattn_tile_get_warp_size_host(const int DKQ, const int DV, const int cc) {
+          #if defined(GGML_USE_HIP)
+              return GGML_CUDA_CC_IS_GCN(cc) && DKQ == 256 && DV == 256 ? 64 : 32;
+          #else
+              GGML_UNUSED(DKQ);
+              GGML_UNUSED(DV);
+              GGML_UNUSED(cc);
+              return 32;
+          #endif // defined(GGML_USE_HIP)
+          }
+
+          static constexpr __device__ int ggml_cuda_fattn_tile_get_warp_size_device(const int DKQ, const int DV) {
+          #if defined(GGML_USE_HIP) && defined(GCN)
+              return DKQ == 256 && DV == 256 ? 64 : 32;
+          #else
+              return 32;
+          #endif // defined(GGML_USE_HIP) && defined(GCN)
+          }
+          '''
+          assert text.count(anchor) == 1
+          text = text.replace(anchor, insert)
+
+          old = '    constexpr int warp_size = 32;\n    constexpr int nwarps    = ggml_cuda_fattn_tile_get_nthreads (DKQ, DV, ncols1*ncols2) / warp_size;'
+          new = '    constexpr int warp_size = ggml_cuda_fattn_tile_get_warp_size_device(DKQ, DV);\n    constexpr int nwarps    = ggml_cuda_fattn_tile_get_nthreads (DKQ, DV, ncols1*ncols2) / warp_size;'
+          assert text.count(old) == 1
+          text = text.replace(old, new)
+
+          old = '    const int warp_size = 32;\n\n    constexpr size_t nbytes_shared = 0;'
+          new = '    const int warp_size = ggml_cuda_fattn_tile_get_warp_size_host(DKQ, DV, cc);\n\n    constexpr size_t nbytes_shared = 0;'
+          assert text.count(old) == 1
+          text = text.replace(old, new)
+
+          path.write_text(text)
+          Path('.github/workflows/temp-wave64-tile-gcn.yml').unlink()
+          PY
+
+      - name: Commit experiment
+        shell: bash
+        run: |
+          git config user.name github-actions[bot]
+          git config user.email 41898282+github-actions[bot]@users.noreply.github.com
+          git add ggml/src/ggml-cuda/fattn-tile.cuh .github/workflows/temp-wave64-tile-gcn.yml
+          git diff --cached --check
+          git commit -m "hip: test wave64 fattn tile on GCN D256"
+          git push origin HEAD:feature_change_to_warp_size64
