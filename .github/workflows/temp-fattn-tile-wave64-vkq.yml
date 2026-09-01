@@ -17,6 +17,8 @@ jobs:
         with:
           ref: feature_change_to_warp_size64
           fetch-depth: 0
+      - name: Fix patch script
+        run: python3 .github/scripts/temp-fix-fattn-tile-wave64-vkq.py
       - name: Apply patch
         run: python3 .github/scripts/temp-fattn-tile-wave64-vkq.py
       - name: Commit patch
