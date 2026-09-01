@@ -8,11 +8,15 @@ void sum_rows_f32_cuda(const float * x, float * dst, const int ncols, const int 
     if ((nrows / nsm) < 2) {
         const dim3 block_dims(512, 1, 1);
         const ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(block_nums, block_dims, 0, stream);
-        ggml_cuda_kernel_launch(reduce_rows_f32</*norm=*/false>, launch_params, x, dst, ncols);
-    } else {
-        const dim3 block_dims(ncols < 1024 ? 32 : 128, 1, 1);
+        ggml_cuda_kernel_launch(reduce_rows_f32</*norm=*/false, 512>, launch_params, x, dst, ncols);
+    } else if (ncols < 1024) {
+        const dim3 block_dims(32, 1, 1);
         const ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(block_nums, block_dims, 0, stream);
-        ggml_cuda_kernel_launch(reduce_rows_f32</*norm=*/false>, launch_params, x, dst, ncols);
+        ggml_cuda_kernel_launch(reduce_rows_f32</*norm=*/false, 32>, launch_params, x, dst, ncols);
+    } else {
+        const dim3 block_dims(128, 1, 1);
+        const ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(block_nums, block_dims, 0, stream);
+        ggml_cuda_kernel_launch(reduce_rows_f32</*norm=*/false, 128>, launch_params, x, dst, ncols);
     }
 }
 
@@ -37,11 +41,15 @@ void ggml_cuda_op_sum_rows(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
         // Increase num threads to 512 for small nrows to better hide the latency
         const dim3 block_dims(512, 1, 1);
         const ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(block_nums, block_dims, 0, stream);
-        ggml_cuda_kernel_launch(reduce_rows_f32</*norm=*/false>, launch_params, src0_d, dst_d, ncols);
-    } else {
+        ggml_cuda_kernel_launch(reduce_rows_f32</*norm=*/false, 512>, launch_params, src0_d, dst_d, ncols);
+    } else if (ncols < 1024) {
         // Enough active SMs to hide latency, use smaller blocks to allow better scheduling
-        const dim3 block_dims(ncols < 1024 ? 32 : 128, 1, 1);
+        const dim3 block_dims(32, 1, 1);
         const ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(block_nums, block_dims, 0, stream);
-        ggml_cuda_kernel_launch(reduce_rows_f32</*norm=*/false>, launch_params, src0_d, dst_d, ncols);
+        ggml_cuda_kernel_launch(reduce_rows_f32</*norm=*/false, 32>, launch_params, src0_d, dst_d, ncols);
+    } else {
+        const dim3 block_dims(128, 1, 1);
+        const ggml_cuda_kernel_launch_params launch_params = ggml_cuda_kernel_launch_params(block_nums, block_dims, 0, stream);
+        ggml_cuda_kernel_launch(reduce_rows_f32</*norm=*/false, 128>, launch_params, src0_d, dst_d, ncols);
     }
 }
