@@ -456,10 +456,8 @@ static best_fattn_kernel ggml_cuda_get_best_fattn_kernel(const int device, const
     // For small batch sizes the vector kernel may be preferable over the kernels optimized for large batch sizes:
     // 192 satisfies % 64 == 0 but has no vec instance (DKQ != DV); force it onto the MMA path.
 #if defined(GGML_USE_HIP)
-    const bool gcn_vec_tail_type = K->type == V->type &&
-        (K->type == GGML_TYPE_Q4_0 || K->type == GGML_TYPE_Q4_1 || K->type == GGML_TYPE_Q5_1 || K->type == GGML_TYPE_Q8_0);
     const bool can_use_gcn_vec_tail = GGML_CUDA_CC_IS_GCN(cc) && Q->ne[0] == 256 && Q->ne[1] == 1 &&
-        gcn_vec_tail_type && K->ne[1] >= FATTN_KQ_STRIDE;
+        K->type == GGML_TYPE_Q8_0 && V->type == GGML_TYPE_Q8_0 && K->ne[1] >= FATTN_KQ_STRIDE;
 #else
     constexpr bool can_use_gcn_vec_tail = false;
 #endif // defined(GGML_USE_HIP)

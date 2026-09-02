@@ -715,9 +715,7 @@ void ggml_cuda_flash_attn_ext_vec_case(ggml_backend_cuda_context & ctx, ggml_ten
     memcpy(&logit_softcap, (const float *) KQV->op_params + 2, sizeof(float));
 
 #if defined(GGML_USE_HIP)
-    constexpr bool gcn_vec_tail_type = type_K == type_V &&
-        (type_K == GGML_TYPE_Q4_0 || type_K == GGML_TYPE_Q4_1 || type_K == GGML_TYPE_Q5_1 || type_K == GGML_TYPE_Q8_0);
-    if constexpr (D == 256 && gcn_vec_tail_type) {
+    if constexpr (D == 256 && type_K == GGML_TYPE_Q8_0 && type_V == GGML_TYPE_Q8_0) {
         const ggml_tensor * K = dst->src[1];
         const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
         if (GGML_CUDA_CC_IS_GCN(cc) && Q->ne[1] == 1 && K->ne[1] % FATTN_KQ_STRIDE != 0) {

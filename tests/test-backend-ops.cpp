@@ -10389,6 +10389,14 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
     for (const ggml_type type : {GGML_TYPE_Q4_0, GGML_TYPE_Q4_1, GGML_TYPE_Q5_1}) {
         test_cases.emplace_back(new test_flash_attn_ext(256, 256, 2, {16, 1}, 20000, 1, true, false, 0, 0, GGML_PREC_F32, type, type));
     }
+
+    // Characterize GCN wave64 vector-vs-tile behavior across D and quant type.
+    for (int hs : {64, 128}) {
+        for (const ggml_type type : {GGML_TYPE_Q4_0, GGML_TYPE_Q4_1, GGML_TYPE_Q5_0, GGML_TYPE_Q5_1, GGML_TYPE_Q8_0}) {
+            test_cases.emplace_back(new test_flash_attn_ext(hs, hs, 8, {8, 1},  9984, 1, true, false, 0, 0, GGML_PREC_F32, type, type));
+            test_cases.emplace_back(new test_flash_attn_ext(hs, hs, 8, {8, 1}, 10000, 1, true, false, 0, 0, GGML_PREC_F32, type, type));
+        }
+    }
     test_cases.emplace_back(new test_flash_attn_ext(256, 256, 2, {16, 1}, 10000, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
     test_cases.emplace_back(new test_flash_attn_ext(256, 256, 2, {16, 1}, 20000, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
     test_cases.emplace_back(new test_flash_attn_ext(256, 256, 2, {16, 1}, 10000, 512, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0));
