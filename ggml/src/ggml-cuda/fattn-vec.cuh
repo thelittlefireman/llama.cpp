@@ -7,12 +7,8 @@ static int ggml_cuda_fattn_vec_get_nthreads_host(const int cc) {
 }
 
 static int ggml_cuda_fattn_vec_get_warp_size_host(const int cc) {
-#if defined(GGML_USE_HIP)
-    return GGML_CUDA_CC_IS_GCN(cc) ? 64 : WARP_SIZE;
-#else
     GGML_UNUSED(cc);
     return WARP_SIZE;
-#endif // defined(GGML_USE_HIP)
 }
 
 static constexpr __device__ int ggml_cuda_fattn_vec_get_nthreads_device() {
@@ -20,11 +16,7 @@ static constexpr __device__ int ggml_cuda_fattn_vec_get_nthreads_device() {
 }
 
 static constexpr __device__ int ggml_cuda_fattn_vec_get_warp_size_device() {
-#if defined(GGML_USE_HIP) && defined(GCN)
-    return 64;
-#else
     return WARP_SIZE;
-#endif // defined(GGML_USE_HIP) && defined(GCN)
 }
 
 // Currently llvm with the amdgcn target does not support unrolling loops
