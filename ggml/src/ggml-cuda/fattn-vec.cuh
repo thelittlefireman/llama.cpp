@@ -2,21 +2,31 @@
 #include "fattn-common.cuh"
 
 static int ggml_cuda_fattn_vec_get_nthreads_host(const int cc) {
-    return 128;
     GGML_UNUSED(cc);
+    return 128;
 }
 
+template <ggml_type type_K, ggml_type type_V>
 static int ggml_cuda_fattn_vec_get_warp_size_host(const int cc) {
+#if defined(GGML_USE_HIP)
+    return GGML_CUDA_CC_IS_GCN(cc) && type_K == GGML_TYPE_Q8_0 && type_V == GGML_TYPE_Q8_0 ? 64 : WARP_SIZE;
+#else
     GGML_UNUSED(cc);
     return WARP_SIZE;
+#endif // defined(GGML_USE_HIP)
 }
 
 static constexpr __device__ int ggml_cuda_fattn_vec_get_nthreads_device() {
     return 128;
 }
 
+template <ggml_type type_K, ggml_type type_V>
 static constexpr __device__ int ggml_cuda_fattn_vec_get_warp_size_device() {
+#if defined(GGML_USE_HIP) && defined(GCN)
+    return type_K == GGML_TYPE_Q8_0 && type_V == GGML_TYPE_Q8_0 ? 64 : WARP_SIZE;
+#else
     return WARP_SIZE;
+#endif // defined(GGML_USE_HIP) && defined(GCN)
 }
 
 // Currently llvm with the amdgcn target does not support unrolling loops
@@ -93,7 +103,7 @@ static __global__ void flash_attn_ext_vec(
 #endif // GGML_USE_HIP
 
     constexpr int nthreads    = ggml_cuda_fattn_vec_get_nthreads_device();
-    constexpr int warp_size   = ggml_cuda_fattn_vec_get_warp_size_device();
+    constexpr int warp_size   = ggml_cuda_fattn_vec_get_warp_size_device<type_K, type_V>();
     constexpr int nthreads_KQ = (type_K == GGML_TYPE_F16 || type_K == GGML_TYPE_BF16) ? 128 / cpy_nb : nthreads_KQ_q;
     constexpr int nthreads_V  = (type_V == GGML_TYPE_F16 || type_V == GGML_TYPE_BF16) ? 128 / cpy_nb : nthreads_V_q;
 
@@ -689,7 +699,7 @@ void ggml_cuda_flash_attn_ext_vec_case_impl(ggml_backend_cuda_context & ctx, ggm
     const int cc = ggml_cuda_info().devices[ggml_cuda_get_device()].cc;
 
     const int nthreads  = ggml_cuda_fattn_vec_get_nthreads_host(cc);
-    const int warp_size = ggml_cuda_fattn_vec_get_warp_size_host(cc);
+    const int warp_size = ggml_cuda_fattn_vec_get_warp_size_host<type_K, type_V>(cc);
     const int nwarps    = nthreads / warp_size;
     fattn_kernel_t fattn_kernel = flash_attn_ext_vec<D, cols_per_block, type_K, type_V, use_logit_softcap, oob_check>;
     const bool need_f16_K = type_K == GGML_TYPE_F16;
