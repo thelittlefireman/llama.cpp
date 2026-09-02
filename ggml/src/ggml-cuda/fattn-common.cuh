@@ -5,7 +5,6 @@
 #include "vecdotq.cuh"
 
 #include <cstdint>
-#include <cstdio>
 
 #define FATTN_KQ_STRIDE       256
 #define HALF_MAX_HALF         __float2half(65504.0f/2) // Use neg. of this instead of -INFINITY to initialize KQ max vals to avoid NaN upon subtraction.
@@ -1183,17 +1182,6 @@ void launch_fattn(
             dst_tmp_meta.alloc(parallel_blocks*ggml_nrows(KQV));
         }
     }
-
-#if defined(GGML_USE_HIP)
-    if constexpr (DV == 256) {
-        if (Q->ne[1] == 1 && K->type == GGML_TYPE_Q8_0 && V->type == GGML_TYPE_Q8_0) {
-            fprintf(stderr,
-                "FATTN_DEBUG D=%d kv=%lld nb=%lld block=[%u,%u] max_blocks_per_sm=%d ntiles_KV=%d parallel_blocks=%d grid=[%u,%u,%u]\n",
-                DV, (long long) K->ne[1], (long long) Q->ne[1], block_dim.x, block_dim.y,
-                max_blocks_per_sm, ntiles_KV, parallel_blocks, blocks_num.x, blocks_num.y, blocks_num.z);
-        }
-    }
-#endif // defined(GGML_USE_HIP)
 
     float scale         = 1.0f;
     float max_bias      = 0.0f;

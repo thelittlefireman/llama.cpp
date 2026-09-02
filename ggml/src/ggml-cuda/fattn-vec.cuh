@@ -197,19 +197,14 @@ static __global__ void flash_attn_ext_vec(
 #pragma unroll
                 for (int i0 = 0; i0 < int(D/sizeof(int)); i0 += nthreads_quantize) {
 #if defined(GGML_USE_HIP) && defined(GCN)
-                    if constexpr (nthreads_quantize <= WARP_SIZE) {
-                        if (threadIdx.x < WARP_SIZE) {
-                            quantize_q8_1_to_shared<float2, nthreads_quantize>
-                                (Q_f + i0*sizeof(int), scale, tmp_q_i32 + i0, tmp_q_ds + i0/QI8_1);
-                        }
-                    } else {
+                    const bool quantize_lane_active = nthreads_quantize > WARP_SIZE || threadIdx.x < WARP_SIZE;
+#else
+                    constexpr bool quantize_lane_active = true;
+#endif // defined(GGML_USE_HIP) && defined(GCN)
+                    if (quantize_lane_active) {
                         quantize_q8_1_to_shared<float2, nthreads_quantize>
                             (Q_f + i0*sizeof(int), scale, tmp_q_i32 + i0, tmp_q_ds + i0/QI8_1);
                     }
-#else
-                    quantize_q8_1_to_shared<float2, nthreads_quantize>
-                        (Q_f + i0*sizeof(int), scale, tmp_q_i32 + i0, tmp_q_ds + i0/QI8_1);
-#endif // defined(GGML_USE_HIP) && defined(GCN)
                 }
             }
         }
@@ -285,6 +280,7 @@ static __global__ void flash_attn_ext_vec(
              // Increment pointers after each loop:
              K += gridDim.y*nthreads*nb11, V += gridDim.y*nthreads*nb21, maskh += gridDim.y*nthreads) {
 
+        // Keep bounds checks out of the full-tile hot path. They cause a large regression on GCN.
         if constexpr (oob_check) {
             if (k_VKQ_0 + nthreads > k_VKQ_max) {
                 // Calculate KQ tile and keep track of new maximum KQ values:
