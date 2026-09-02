@@ -104,6 +104,11 @@ static __global__ void flash_attn_ext_vec(
     constexpr int warp_size   = ggml_cuda_fattn_vec_get_warp_size_device();
     constexpr int nthreads_KQ = (type_K == GGML_TYPE_F16 || type_K == GGML_TYPE_BF16) ? 128 / cpy_nb : nthreads_KQ_q;
     constexpr int nthreads_V  = (type_V == GGML_TYPE_F16 || type_V == GGML_TYPE_BF16) ? 128 / cpy_nb : nthreads_V_q;
+#if defined(GGML_USE_HIP) && defined(GCN)
+    constexpr bool allow_kv_tail = D == 256 && ncols == 1 && type_K == GGML_TYPE_Q8_0 && type_V == GGML_TYPE_Q8_0;
+#else
+    constexpr bool allow_kv_tail = false;
+#endif // defined(GGML_USE_HIP) && defined(GCN)
 
     static_assert(warp_size % nthreads_KQ == 0, "bad nthreads_K");
     static_assert(warp_size % nthreads_V  == 0, "bad nthreads_V");
@@ -285,6 +290,8 @@ static __global__ void flash_attn_ext_vec(
              // Increment pointers after each loop:
              K += gridDim.y*nthreads*nb11, V += gridDim.y*nthreads*nb21, maskh += gridDim.y*nthreads) {
 
+        const bool full_kv_tile = k_VKQ_0 + nthreads <= k_VKQ_max;
+
         // Calculate KQ tile and keep track of new maximum KQ values:
         float KQ_reg[ncols]; // KQ in registers.
 
@@ -300,15 +307,20 @@ static __global__ void flash_attn_ext_vec(
 
 #pragma unroll
             for (int j = 0; j < ncols; ++j) {
-                float sum = vec_dot_KQ(K + i_KQ*nb11, Q_reg[j], Q_i32[j], Q_ds[j]);
+                const bool valid_KQ = !allow_kv_tail || full_kv_tile || k_VKQ_0 + i_KQ < k_VKQ_max;
+                float sum = valid_KQ ? vec_dot_KQ(K + i_KQ*nb11, Q_reg[j], Q_i32[j], Q_ds[j]) : 0.0f;
                 sum = warp_reduce_sum<nthreads_KQ>(sum);
 
-                if (use_logit_softcap) {
-                    sum = logit_softcap*tanhf(sum);
-                }
+                if (valid_KQ) {
+                    if (use_logit_softcap) {
+                        sum = logit_softcap*tanhf(sum);
+                    }
 
-                if (mask && (ncols == 1 || ic0 + j < int(ne01.z))) {
-                    sum += slope*__half2float(maskh[j*ne11 + i_KQ]);
+                    if (mask && (ncols == 1 || ic0 + j < int(ne01.z))) {
+                        sum += slope*__half2float(maskh[j*ne11 + i_KQ]);
+                    }
+                } else {
+                    sum = -FLT_MAX/2.0f;
                 }
 
                 KQ_max_new[j] = fmaxf(KQ_max_new[j], sum + FATTN_KQ_MAX_OFFSET);
@@ -354,6 +366,12 @@ static __global__ void flash_attn_ext_vec(
 #pragma unroll
         for (int k0 = 0; k0 < warp_size; k0 += V_cols_per_iter) {
             const int k = threadIdx.y*warp_size + k0 + (nthreads_V == warp_size ? 0 : threadIdx.x / nthreads_V);
+
+            if constexpr (allow_kv_tail) {
+                if (!full_kv_tile && k_VKQ_0 + k >= k_VKQ_max) {
+                    continue;
+                }
+            }
 
 #ifdef V_DOT2_F32_F16_AVAILABLE
             half2 KQ_k[ncols];
