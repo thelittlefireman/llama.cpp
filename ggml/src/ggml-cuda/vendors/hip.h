@@ -252,7 +252,29 @@ typedef __hip_fp8_e4m3 __nv_fp8_e4m3;
 
 typedef int8_t int8x4_t __attribute__((ext_vector_type(4)));
 typedef uint8_t uint8x4_t __attribute__((ext_vector_type(4)));
+
+// Packed byte subtraction without saturation for non-negative signed bytes.
+// Precondition: every byte in a and b is in [0, 127]. Under this condition
+// a-b is always representable as int8_t, so signed saturation is unnecessary.
+// The 0x80 bias prevents carries/borrows from crossing byte boundaries.
+static __device__ __forceinline__ int ggml_hip_sub_i8x4_nosat_nonnegative(const int a, const int b) {
+    const uint32_t ua = static_cast<uint32_t>(a);
+    const uint32_t ub = static_cast<uint32_t>(b);
+    const uint32_t packed_bias = 0x80808080u - ub;
+    return static_cast<int>((ua + packed_bias) ^ 0x80808080u);
+}
+
 static __device__ __forceinline__ int __vsubss4(const int a, const int b) {
+    const uint32_t ua = static_cast<uint32_t>(a);
+    const uint32_t ub = static_cast<uint32_t>(b);
+
+    // All current quantized call sites (Q3_K/Q4_0/Q5_0/Q6_K) have
+    // non-negative byte operands. Keep the full saturating fallback for the
+    // general case so this wrapper preserves CUDA __vsubss4 semantics.
+    if (((ua | ub) & 0x80808080u) == 0) {
+        return ggml_hip_sub_i8x4_nosat_nonnegative(a, b);
+    }
+
     const int8x4_t va = reinterpret_cast<const int8x4_t&>(a);
     const int8x4_t vb = reinterpret_cast<const int8x4_t&>(b);
 #if __has_builtin(__builtin_elementwise_sub_sat)
@@ -273,7 +295,14 @@ static __device__ __forceinline__ int __vsubss4(const int a, const int b) {
 }
 
 static __device__ __forceinline__ int __vsub4(const int a, const int b) {
-    return __vsubss4(a, b);
+    // Exact modulo-256 subtraction on four independent bytes. Setting the
+    // guard bit before subtracting the low 7 bits prevents inter-byte borrows;
+    // the final XOR restores the correct high bit for each byte.
+    const uint32_t ua = static_cast<uint32_t>(a);
+    const uint32_t ub = static_cast<uint32_t>(b);
+    const uint32_t lo = (ua | 0x80808080u) - (ub & 0x7F7F7F7Fu);
+    const uint32_t hi = ~(ua ^ ub) & 0x80808080u;
+    return static_cast<int>(lo ^ hi);
 }
 
 static __device__ __forceinline__ unsigned int __vcmpeq4(unsigned int a, unsigned int b) {
