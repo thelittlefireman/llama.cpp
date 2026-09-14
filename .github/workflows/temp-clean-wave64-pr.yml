@@ -17,46 +17,21 @@ jobs:
       - uses: actions/checkout@v4
         with:
           fetch-depth: 0
-      - name: Rebuild clean wave64 branch
+      - name: Remove unrelated diff from wave64 branch
         shell: bash
         run: |
           set -euo pipefail
           git fetch origin master feature_change_to_warp_size64_master
-          git show origin/feature_change_to_warp_size64_master:ggml/src/ggml-cuda/fattn-vec.cuh > /tmp/fattn-vec.cuh
-          git checkout -B feature_change_to_warp_size64_master origin/master
+          git checkout -B feature_change_to_warp_size64_master origin/feature_change_to_warp_size64_master
           python3 - <<'PY'
           from pathlib import Path
 
-          p = Path('/tmp/fattn-vec.cuh')
+          p = Path('ggml/src/ggml-cuda/fattn-vec.cuh')
           s = p.read_text()
-
-          s = s.replace('template<int D, int ncols, ggml_type type_K, ggml_type type_V, bool use_logit_softcap, bool oob_check> // D == head size',
-                        'template<int D, int ncols, ggml_type type_K, ggml_type type_V, bool use_logit_softcap> // D == head size')
-
-          start_marker = '        // Keep bounds checks out of the full-tile hot path. They cause a large regression on GCN.\n'
-          start = s.index(start_marker)
-          continue_pos = s.index('                continue;\n', start)
-          end = s.index('        // Calculate KQ tile and keep track of new maximum KQ values:\n', continue_pos)
-          s = s[:start] + s[end:]
-
-          s = s.replace('template <int D, int cols_per_block, ggml_type type_K, ggml_type type_V, bool use_logit_softcap, bool oob_check>\n',
-                        'template <int D, int cols_per_block, ggml_type type_K, ggml_type type_V, bool use_logit_softcap>\n')
-          s = s.replace('flash_attn_ext_vec<D, cols_per_block, type_K, type_V, use_logit_softcap, oob_check>',
-                        'flash_attn_ext_vec<D, cols_per_block, type_K, type_V, use_logit_softcap>')
-
-          host_start = s.index('#if defined(GGML_USE_HIP)\n    if constexpr (D == 256 && type_K == GGML_TYPE_Q8_0 && type_V == GGML_TYPE_Q8_0) {')
-          host_end = s.index('    if (Q->ne[1] == 1) {', host_start)
-          s = s[:host_start] + s[host_end:]
-
-          s = s.replace('ggml_cuda_flash_attn_ext_vec_case_impl<D, cols_per_block, type_K, type_V, use_logit_softcap, false>(ctx, dst);',
-                        'ggml_cuda_flash_attn_ext_vec_case_impl<D, cols_per_block, type_K, type_V, use_logit_softcap>(ctx, dst);')
-
-          if 'oob_check' in s:
-              raise SystemExit('oob_check still present after cleanup')
-          if 'can_use_gcn_vec_tail' in s:
-              raise SystemExit('tail dispatch marker unexpectedly present')
-
-          Path('ggml/src/ggml-cuda/fattn-vec.cuh').write_text(s)
+          s = s.replace('static int ggml_cuda_fattn_vec_get_nthreads_host(const int cc) {\n    GGML_UNUSED(cc);\n    return 128;\n}',
+                        'static int ggml_cuda_fattn_vec_get_nthreads_host(const int cc) {\n    return 128;\n    GGML_UNUSED(cc);\n}')
+          s = s.replace('#ifndef GGML_USE_HIP\n        __syncwarp();\n#endif // GGML_USE_HIP', '        ggml_cuda_syncwarp();')
+          p.write_text(s)
           PY
           git diff --check
           test "$(git diff --name-only | wc -l)" -eq 1
@@ -64,5 +39,5 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add ggml/src/ggml-cuda/fattn-vec.cuh
-          git commit -m 'ggml-cuda: hip use wave64 for GCN Q8 flash attention vec'
+          git commit --amend --no-edit
           git push --force origin HEAD:feature_change_to_warp_size64_master
