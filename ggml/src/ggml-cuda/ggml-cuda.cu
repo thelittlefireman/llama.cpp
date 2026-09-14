@@ -1444,8 +1444,18 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
     bool is_src0_cont_2 = ggml_is_contiguous_2(src0);
     bool is_src1_cont_2 = ggml_is_contiguous_2(src1);
 
+    static constexpr size_t src0_convert_chunk_size = 512ull * 1024 * 1024;
+    const bool chunk_src0 = compute_type == GGML_TYPE_F32 && src0->type == GGML_TYPE_BF16 && ne00 > 0 &&
+        ne02 == 1 && ne03 == 1 && ne12 == 1 && ne13 == 1 && ggml_is_contiguous(src0) &&
+        ggml_nelements(src0) * sizeof(cuda_t) > src0_convert_chunk_size;
+    int64_t src0_chunk_rows = 0;
+
     if (src0->type == compute_type) {
         src0_ptr = (const cuda_t *) src0->data;
+    } else if (chunk_src0) {
+        src0_chunk_rows = std::max<int64_t>(1, src0_convert_chunk_size / (ne00 * sizeof(cuda_t)));
+        src0_chunk_rows = std::min(src0_chunk_rows, ne01);
+        src0_alloc.alloc(ne00 * src0_chunk_rows);
     } else {
         src0_alloc.alloc(ggml_nelements(src0));
 
@@ -1528,6 +1538,24 @@ static void ggml_cuda_mul_mat_cublas_impl(ggml_backend_cuda_context & ctx, const
             nbd2 /= sizeof(float) / sizeof(cuda_t);
             nbd3 /= sizeof(float) / sizeof(cuda_t);
         }
+    }
+
+    if (chunk_src0) {
+        const auto convert_func = traits::convert(src0->type);
+        GGML_ASSERT(convert_func != nullptr);
+
+        for (int64_t i01 = 0; i01 < ne01; i01 += src0_chunk_rows) {
+            const int64_t rows = std::min(src0_chunk_rows, ne01 - i01);
+            convert_func((const char *) src0->data + i01*nb01, src0_alloc.get(), ne00*rows, main_stream);
+
+            CUBLAS_CHECK(
+                cublasSgemm(cublas_h, CUBLAS_OP_T, CUBLAS_OP_N,
+                        rows, ne11, ne10,
+                        (const float *) alpha, (const float *) src0_alloc.get(), ne00,
+                                               (const float *) src1_ptr, s11,
+                        (const float *) beta,  dst_ddf + i01, ne0));
+        }
+        return;
     }
 
     GGML_ASSERT(ne12 % ne02 == 0);
