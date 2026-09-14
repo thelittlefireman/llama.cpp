@@ -1,0 +1,237 @@
+name: Temporary gfx906 spill comparison
+
+on:
+  push:
+    branches:
+      - tmp-gfx906-spill-v27-run2
+    paths:
+      - .github/workflows/temp-gfx906-spill-v27.yml
+
+jobs:
+  spill:
+    runs-on: ubuntu-22.04
+    container: rocm/dev-ubuntu-22.04:7.2.1
+    steps:
+      - name: Checkout master
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          path: base
+          fetch-depth: 1
+      - name: Checkout optimized branch
+        uses: actions/checkout@v4
+        with:
+          ref: feature_change_to_warp_size64_master
+          path: opt
+          fetch-depth: 1
+      - name: Dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          apt-get update
+          apt-get install -y build-essential cmake python3 binutils rocblas-dev hipblas-dev
+      - name: Build master and optimized gfx906 ISA
+        shell: bash
+        run: |
+          set -euo pipefail
+          HIP_CLANG="$(hipconfig -l)/clang"
+          FA_QUANTS='q4_0-q4_0,q4_1-q4_1,q5_0-q5_0,q5_1-q5_1,q8_0-q8_0,f16-f16'
+          HIP_FLAGS='--save-temps=obj -Rpass-analysis=kernel-resource-usage -O3 -ffast-math -funsafe-math-optimizations -fno-finite-math-only'
+          build_one() {
+            local src="$1"
+            local build="$2"
+            local log="$3"
+            cmake -S "$src" -B "$build" -DCMAKE_HIP_COMPILER="$HIP_CLANG" -DGPU_TARGETS=gfx906 -DGGML_HIP=ON -DGGML_HIP_EXPORT_METRICS=ON -DGGML_CUDA_FA_QUANTS="$FA_QUANTS" -DGGML_NATIVE=OFF -DCMAKE_BUILD_TYPE=Release -DCMAKE_HIP_FLAGS="$HIP_FLAGS"
+            cmake --build "$build" --target ggml-hip -j2 2>&1 | tee "$log"
+          }
+          build_one base build-base base-metrics.log
+          build_one opt build-opt opt-metrics.log
+      - name: Spill-focused v27-compatible report
+        shell: bash
+        run: |
+          set -euo pipefail
+          cat > spill_report.py <<'PY'
+          import csv, re, subprocess
+          from collections import defaultdict
+          from pathlib import Path
+
+          FUNC_RE = re.compile(r'remark: ([^:]+):(\d+):\d+: Function Name: (\S+)')
+          METRIC_RE = re.compile(r'remark: ([^:]+):(\d+):\d+:\s+([^:]+):\s+(\d+)')
+          TYPE_RE = re.compile(r'^\s*\.type\s+([^,\s]+)\s*,\s*@function\b')
+          SIZE_RE = re.compile(r'^\s*\.size\s+([^,\s]+)\s*,')
+
+          def demangle(symbol):
+              try:
+                  return subprocess.check_output(['c++filt', symbol], text=True).strip()
+              except Exception:
+                  return symbol
+
+          def normalize(name):
+              m = re.search(r'flash_attn_ext_vec<([^>]*)>', name)
+              if not m:
+                  return name
+              params = [x.strip() for x in m.group(1).split(',')]
+              if len(params) == 6 and params[-1] == 'false':
+                  params = params[:-1]
+              return name[:m.start(1)] + ', '.join(params) + name[m.end(1):]
+
+          def parse_metrics(path):
+              funcs = defaultdict(lambda: {'location':'', 'VGPRs':0, 'SGPRs':0, 'VGPRs Spill':0, 'SGPRs Spill':0, 'ScratchSize [bytes/lane]':0, 'Occupancy [waves/SIMD]':0})
+              stack = []
+              for line in Path(path).read_text(errors='ignore').splitlines():
+                  fm = FUNC_RE.search(line)
+                  if fm:
+                      loc = fm.group(1) + ':' + fm.group(2)
+                      sym = fm.group(3)
+                      funcs[sym]['location'] = loc
+                      stack.append((sym, loc))
+                      continue
+                  mm = METRIC_RE.search(line)
+                  if not mm:
+                      continue
+                  loc = mm.group(1) + ':' + mm.group(2)
+                  key = mm.group(3).strip()
+                  val = int(mm.group(4))
+                  for sym, sloc in reversed(stack):
+                      if sloc == loc:
+                          funcs[sym][key] = val
+                          break
+              return funcs
+
+          def parse_asm(root):
+              out = defaultdict(lambda: {'folded_spill':0, 'folded_reload':0, 'scratch_loads':0, 'scratch_stores':0})
+              for path in Path(root).rglob('*.s'):
+                  if 'fattn' not in path.name.lower() and 'flash' not in path.name.lower():
+                      continue
+                  current = None
+                  for line in path.read_text(errors='ignore').splitlines():
+                      mt = TYPE_RE.match(line)
+                      if mt:
+                          current = mt.group(1)
+                          continue
+                      ms = SIZE_RE.match(line)
+                      if ms and current == ms.group(1):
+                          current = None
+                          continue
+                      if not current:
+                          continue
+                      low = line.lower()
+                      if 'folded spill' in low:
+                          out[current]['folded_spill'] += 1
+                      if 'folded reload' in low:
+                          out[current]['folded_reload'] += 1
+                      if re.search(r'\bscratch_load', low):
+                          out[current]['scratch_loads'] += 1
+                      if re.search(r'\bscratch_store', low):
+                          out[current]['scratch_stores'] += 1
+              return out
+
+          versions = {
+              'master': ('base-metrics.log', 'build-base'),
+              'optimized': ('opt-metrics.log', 'build-opt'),
+          }
+          all_rows = []
+          by_version = {}
+          for version, (log, build) in versions.items():
+              metrics = parse_metrics(log)
+              asm = parse_asm(build)
+              rows = []
+              for sym, data in metrics.items():
+                  name = demangle(sym)
+                  if 'flash_attn' not in name and 'fattn' not in name:
+                      continue
+                  extra = asm.get(sym, {})
+                  row = {
+                      'version': version,
+                      'symbol': sym,
+                      'name': name,
+                      'normalized_name': normalize(name),
+                      'vgpr': data.get('VGPRs', 0),
+                      'sgpr': data.get('SGPRs', 0),
+                      'vgpr_spills': data.get('VGPRs Spill', 0),
+                      'sgpr_spills': data.get('SGPRs Spill', 0),
+                      'scratch_bytes': data.get('ScratchSize [bytes/lane]', 0),
+                      'occupancy': data.get('Occupancy [waves/SIMD]', 0),
+                      'folded_spill': extra.get('folded_spill', 0),
+                      'folded_reload': extra.get('folded_reload', 0),
+                      'scratch_loads': extra.get('scratch_loads', 0),
+                      'scratch_stores': extra.get('scratch_stores', 0),
+                  }
+                  rows.append(row)
+                  all_rows.append(row)
+              by_version[version] = rows
+
+          fields = ['version','symbol','name','normalized_name','vgpr','sgpr','vgpr_spills','sgpr_spills','scratch_bytes','occupancy','folded_spill','folded_reload','scratch_loads','scratch_stores']
+          with open('spill-all.tsv', 'w', newline='') as f:
+              w = csv.DictWriter(f, fields, delimiter='\t')
+              w.writeheader(); w.writerows(sorted(all_rows, key=lambda r:(r['version'], r['name'])))
+
+          with open('spill-nonzero.tsv', 'w', newline='') as f:
+              w = csv.DictWriter(f, fields, delimiter='\t')
+              w.writeheader()
+              w.writerows(sorted((r for r in all_rows if r['vgpr_spills'] or r['sgpr_spills'] or r['scratch_bytes'] or r['folded_spill'] or r['folded_reload'] or r['scratch_loads'] or r['scratch_stores']), key=lambda r:(r['version'], -r['vgpr_spills'], -r['scratch_bytes'], r['name'])))
+
+          master = {r['normalized_name']: r for r in by_version['master']}
+          opt = {r['normalized_name']: r for r in by_version['optimized']}
+          common = sorted(set(master) & set(opt))
+          cmp_fields = ['normalized_name','vgpr_before','vgpr_after','vgpr_delta','vgpr_spills_before','vgpr_spills_after','spill_delta','scratch_before','scratch_after','scratch_delta','occupancy_before','occupancy_after']
+          cmp_rows = []
+          for key in common:
+              a, b = master[key], opt[key]
+              cmp_rows.append({
+                  'normalized_name': key,
+                  'vgpr_before': a['vgpr'], 'vgpr_after': b['vgpr'], 'vgpr_delta': b['vgpr']-a['vgpr'],
+                  'vgpr_spills_before': a['vgpr_spills'], 'vgpr_spills_after': b['vgpr_spills'], 'spill_delta': b['vgpr_spills']-a['vgpr_spills'],
+                  'scratch_before': a['scratch_bytes'], 'scratch_after': b['scratch_bytes'], 'scratch_delta': b['scratch_bytes']-a['scratch_bytes'],
+                  'occupancy_before': a['occupancy'], 'occupancy_after': b['occupancy'],
+              })
+          with open('spill-compare.tsv', 'w', newline='') as f:
+              w = csv.DictWriter(f, cmp_fields, delimiter='\t')
+              w.writeheader(); w.writerows(sorted(cmp_rows, key=lambda r:(-r['spill_delta'], -r['scratch_delta'], -r['vgpr_delta'], r['normalized_name'])))
+
+          def summarize(rows):
+              return {
+                  'functions': len(rows),
+                  'spilling_functions': sum(bool(r['vgpr_spills'] or r['sgpr_spills'] or r['scratch_bytes'] or r['scratch_loads'] or r['scratch_stores']) for r in rows),
+                  'vgpr_spills': sum(r['vgpr_spills'] for r in rows),
+                  'sgpr_spills': sum(r['sgpr_spills'] for r in rows),
+                  'scratch_bytes_sum': sum(r['scratch_bytes'] for r in rows),
+                  'folded_spill': sum(r['folded_spill'] for r in rows),
+                  'folded_reload': sum(r['folded_reload'] for r in rows),
+                  'scratch_loads': sum(r['scratch_loads'] for r in rows),
+                  'scratch_stores': sum(r['scratch_stores'] for r in rows),
+              }
+
+          with open('spill-summary.txt', 'w') as f:
+              for version in ('master','optimized'):
+                  s = summarize(by_version[version])
+                  f.write(f"{version}: {s}\n")
+              regress = [r for r in cmp_rows if r['spill_delta'] > 0 or r['scratch_delta'] > 0]
+              improve = [r for r in cmp_rows if r['spill_delta'] < 0 or r['scratch_delta'] < 0]
+              f.write(f"common normalized functions: {len(common)}\n")
+              f.write(f"spill/scratch regressions: {len(regress)}\n")
+              f.write(f"spill/scratch improvements: {len(improve)}\n")
+              f.write("\nRegressions:\n")
+              for r in regress[:50]:
+                  f.write(f"spill {r['vgpr_spills_before']}->{r['vgpr_spills_after']} scratch {r['scratch_before']}->{r['scratch_after']} vgpr {r['vgpr_before']}->{r['vgpr_after']} occ {r['occupancy_before']}->{r['occupancy_after']} {r['normalized_name']}\n")
+              f.write("\nOptimized nonzero spills/scratch:\n")
+              for r in sorted((x for x in by_version['optimized'] if x['vgpr_spills'] or x['sgpr_spills'] or x['scratch_bytes'] or x['scratch_loads'] or x['scratch_stores']), key=lambda x:(-x['vgpr_spills'], -x['scratch_bytes'], x['name']))[:100]:
+                  f.write(f"spill={r['vgpr_spills']}/{r['sgpr_spills']} scratch={r['scratch_bytes']} vgpr={r['vgpr']} occ={r['occupancy']} folded={r['folded_spill']}/{r['folded_reload']} scratchops={r['scratch_loads']}/{r['scratch_stores']} {r['name']}\n")
+
+          print(Path('spill-summary.txt').read_text())
+          PY
+          python3 spill_report.py
+      - name: Collect fattn ISA
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p artifact/base-isa artifact/opt-isa
+          find build-base -type f -name '*.s' | grep -E 'fattn|flash' | while read -r f; do cp "$f" "artifact/base-isa/$(basename "$f")"; done
+          find build-opt -type f -name '*.s' | grep -E 'fattn|flash' | while read -r f; do cp "$f" "artifact/opt-isa/$(basename "$f")"; done
+          cp base-metrics.log opt-metrics.log spill-all.tsv spill-nonzero.tsv spill-compare.tsv spill-summary.txt artifact/
+      - name: Upload spill report
+        uses: actions/upload-artifact@v4
+        with:
+          name: gfx906-fattn-spill-report
+          path: artifact
+          retention-days: 7
