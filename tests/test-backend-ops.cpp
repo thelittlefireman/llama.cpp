@@ -10367,8 +10367,37 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
     test_cases.emplace_back(new test_flash_attn_ext(256, 256, 2, {16, 1},  1024, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0));
     test_cases.emplace_back(new test_flash_attn_ext(256, 256, 2, {16, 1},  2048, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0));
     test_cases.emplace_back(new test_flash_attn_ext(256, 256, 2, {16, 1},  4096, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0));
+    test_cases.emplace_back(new test_flash_attn_ext(256, 256, 2, {16, 1},  8192, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0));
+    test_cases.emplace_back(new test_flash_attn_ext(256, 256, 2, {16, 1}, 16384, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0));
+    test_cases.emplace_back(new test_flash_attn_ext(256, 256, 2, {16, 1}, 32768, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0));
+    test_cases.emplace_back(new test_flash_attn_ext(256, 256, 2, {16, 1}, 65536, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0));
+    test_cases.emplace_back(new test_flash_attn_ext(256, 256, 2, {16, 1}, 131072, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0));
+    test_cases.emplace_back(new test_flash_attn_ext(256, 256, 2, {16, 1}, 262144, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0));
     test_cases.emplace_back(new test_flash_attn_ext(256, 256, 2, {16, 1}, 10000, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0));
     test_cases.emplace_back(new test_flash_attn_ext(256, 256, 2, {16, 1}, 20000, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0));
+
+    // GCN wave64 fattn-vec tail coverage around a 10k context.
+    for (int kv : {9984, 9985, 10016, 10048, 10080, 10111, 10112}) {
+        test_cases.emplace_back(new test_flash_attn_ext(256, 256, 2, {16, 1}, kv, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0));
+    }
+
+    // Compare aligned vec and unaligned tile paths before enabling KV tails for more quant types.
+    for (const ggml_type type : {GGML_TYPE_Q4_0, GGML_TYPE_Q4_1, GGML_TYPE_Q5_0, GGML_TYPE_Q5_1}) {
+        test_cases.emplace_back(new test_flash_attn_ext(256, 256, 2, {16, 1},  9984, 1, true, false, 0, 0, GGML_PREC_F32, type, type));
+        test_cases.emplace_back(new test_flash_attn_ext(256, 256, 2, {16, 1}, 10000, 1, true, false, 0, 0, GGML_PREC_F32, type, type));
+    }
+    for (const ggml_type type : {GGML_TYPE_Q4_0, GGML_TYPE_Q4_1, GGML_TYPE_Q5_1}) {
+        test_cases.emplace_back(new test_flash_attn_ext(256, 256, 2, {16, 1}, 20000, 1, true, false, 0, 0, GGML_PREC_F32, type, type));
+    }
+
+    // Validate the GCN fattn-vec warp policy across D and type.
+    for (int hs : {64, 128}) {
+        for (const ggml_type type : {GGML_TYPE_F16, GGML_TYPE_Q4_0, GGML_TYPE_Q4_1, GGML_TYPE_Q5_0, GGML_TYPE_Q5_1, GGML_TYPE_Q8_0}) {
+            test_cases.emplace_back(new test_flash_attn_ext(hs, hs, 8, {8, 1},  9984, 1, true, false, 0, 0, GGML_PREC_F32, type, type));
+            test_cases.emplace_back(new test_flash_attn_ext(hs, hs, 8, {8, 1}, 10000, 1, true, false, 0, 0, GGML_PREC_F32, type, type));
+        }
+    }
+    test_cases.emplace_back(new test_flash_attn_ext(256, 256, 2, {16, 1},  9984, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
     test_cases.emplace_back(new test_flash_attn_ext(256, 256, 2, {16, 1}, 10000, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
     test_cases.emplace_back(new test_flash_attn_ext(256, 256, 2, {16, 1}, 20000, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16));
     test_cases.emplace_back(new test_flash_attn_ext(256, 256, 2, {16, 1}, 10000, 512, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_Q8_0, GGML_TYPE_Q8_0));
@@ -10443,6 +10472,24 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
         test_cases.emplace_back(new test_sum_rows(GGML_TYPE_F32, it));
         test_cases.emplace_back(new test_sum(GGML_TYPE_F32, it));
     }
+
+    const std::array<std::array<int64_t, 4>, 5> norm_cases = {{
+        {  256, 8192, 1, 1 },
+        {  768, 4096, 1, 1 },
+        { 1024, 2048, 1, 1 },
+        { 4096, 1024, 1, 1 },
+        { 8192,  512, 1, 1 },
+    }};
+
+    for (const auto & ne : norm_cases) {
+        test_cases.emplace_back(new test_norm    (GGML_TYPE_F32, ne));
+        test_cases.emplace_back(new test_rms_norm(GGML_TYPE_F32, ne));
+        test_cases.emplace_back(new test_l2_norm (GGML_TYPE_F32, ne));
+    }
+
+    test_cases.emplace_back(new test_group_norm(GGML_TYPE_F32, { 256, 1,  64, 1 }, 32));
+    test_cases.emplace_back(new test_group_norm(GGML_TYPE_F32, { 256, 1, 128, 1 }, 32));
+    test_cases.emplace_back(new test_group_norm(GGML_TYPE_F32, {  64, 64, 320, 1 }, 32));
 
     test_cases.emplace_back(new test_argsort(GGML_TYPE_F32, {65000,  16, 1, 1}));
     test_cases.emplace_back(new test_argsort(GGML_TYPE_F32, {200000, 1,  1, 1}));
