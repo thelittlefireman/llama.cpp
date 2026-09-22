@@ -7,6 +7,49 @@ using namespace ggml_cuda_mma;
 
 #include "mmq.cuh"
 
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+template <ggml_type type, int J, bool fallback> static __device__ __forceinline__ void ggml_cuda_mmq_vec_dot_q4_0_q4_0_dp8a(
+        const int * __restrict__ x, const int * __restrict__ y, float * __restrict__ sum, const int k00) {
+    constexpr int warp_size = ggml_cuda_get_physical_warp_size();
+    constexpr int nwarps    = ggml_cuda_mmq_get_nthreads(type, J, fallback) / warp_size;
+    constexpr int I         = ggml_cuda_mmq_get_I(type, J, fallback);
+    static_assert(QR4_0*VDR_Q4_0_Q8_1_MMQ == 8, "bad W4A4 vector width");
+
+    constexpr tile_x_sizes txs = mmq_get_dp4a_tile_x_sizes(GGML_TYPE_Q4_0, I);
+    const int   * x_qs = (const int   *) x;
+    const float * x_df = (const float *) x_qs + txs.qs;
+    const int   * y_qs = (const int   *) y + 4;
+    const half2 * y_ds = (const half2 *) y;
+
+    for (int k01 = 0; k01 < MMQ_TILE_NE_K; k01 += QR4_0*VDR_Q4_0_Q8_1_MMQ) {
+        const int k0 = k00 + k01;
+        const int group = k01 / (QR4_0*VDR_Q4_0_Q8_1_MMQ);
+
+#pragma unroll
+        for (int j0 = 0; j0 < J; j0 += nwarps) {
+            const int j = j0 + threadIdx.y;
+
+#pragma unroll
+            for (int i0 = 0; i0 < I; i0 += warp_size) {
+                const int i = i0 + threadIdx.x;
+                const int * vx = &x_qs[i*(MMQ_TILE_NE_K + 1) + k0/QR4_0];
+                const int * vy = &y_qs[j*MMQ_TILE_Y_K + 4*group];
+                int sumi = 0;
+
+#pragma unroll
+                for (int l = 0; l < VDR_Q4_0_Q8_1_MMQ; ++l) {
+                    sumi = ggml_cuda_dp8a(vx[l] ^ 0x88888888, vy[l], sumi);
+                }
+
+                const float dx = x_df[i*(MMQ_TILE_NE_K/QI4_0) + i/QI4_0 + k0/(QR4_0*QI4_0)];
+                const float dy = __low2float(y_ds[j*MMQ_TILE_Y_K + group]);
+                sum[j0/nwarps*I/warp_size + i0/warp_size] += sumi*dx*dy;
+            }
+        }
+    }
+}
+#endif // defined(GGML_USE_HIP) && defined(__gfx906__)
+
 template <ggml_type type, int J, bool fallback> static __device__ __forceinline__ void ggml_cuda_mmq_vec_dot_q4_0_q8_1_dp4a(
         const int * __restrict__ x, const int * __restrict__ y, float * __restrict__ sum, const int k00) {
     constexpr int warp_size = ggml_cuda_get_physical_warp_size();

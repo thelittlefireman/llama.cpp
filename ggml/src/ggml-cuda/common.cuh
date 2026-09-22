@@ -757,6 +757,12 @@ static __device__ __forceinline__ int ggml_cuda_dp4a(const int a, const int b, i
 #endif // defined(GGML_USE_HIP)
 }
 
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+static __device__ __forceinline__ int ggml_cuda_dp8a(const int a, const int b, int c) {
+    return __builtin_amdgcn_sdot8(a, b, c, false);
+}
+#endif // defined(GGML_USE_HIP) && defined(__gfx906__)
+
 static __device__ __forceinline__ void ggml_cuda_mad(float & acc, const float v, const float u) {
     acc += v*u;
 }
