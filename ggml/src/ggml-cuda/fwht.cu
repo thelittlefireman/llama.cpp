@@ -95,6 +95,14 @@ bool ggml_cuda_op_fwht(ggml_backend_cuda_context & ctx, const ggml_tensor * src,
         case 512:
             ggml_cuda_kernel_launch(fwht_cuda<512>, launch_params, src_d, dst_d, rows, scale);
             return true;
+#if defined(GGML_USE_HIP)
+        case 1024:
+            if (warp_size != 64) {
+                return false;
+            }
+            ggml_cuda_kernel_launch(fwht_cuda<1024>, launch_params, src_d, dst_d, rows, scale);
+            return true;
+#endif // defined(GGML_USE_HIP)
         default:
             return false;
     }
