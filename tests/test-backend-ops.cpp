@@ -5150,6 +5150,10 @@ struct test_mul_mat_w4a4_hadamard : public test_case {
         }
     }
 
+    double max_nmse_err() override {
+        return 5e-4;
+    }
+
     uint64_t op_flops(ggml_tensor * t) override {
         GGML_UNUSED(t);
         return 2*k*n*(k + m);
@@ -5162,6 +5166,97 @@ struct test_mul_mat_w4a4_hadamard : public test_case {
     std::string op_desc(ggml_tensor * t) override {
         GGML_UNUSED(t);
         return "MUL_MAT_W4A4_HADAMARD";
+    }
+};
+
+struct test_mul_mat_w4a4_outliers : public test_case {
+    const bool hadamard;
+    const int64_t m;
+    const int64_t n;
+    const int64_t k;
+
+    std::string vars() override {
+        return VARS_TO_STR4(hadamard, m, n, k);
+    }
+
+    test_mul_mat_w4a4_outliers(bool hadamard, int64_t m = 576, int64_t n = 32, int64_t k = 1024)
+        : hadamard(hadamard), m(m), n(n), k(k) {
+        GGML_ASSERT(k == 1024);
+    }
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        ggml_tensor * x = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, k, n);
+        ggml_set_name(x, "x");
+
+        ggml_tensor * act = x;
+        if (hadamard) {
+            ggml_tensor * h = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, k, k);
+            ggml_set_name(h, "h");
+            act = ggml_mul_mat(ctx, h, x);
+            ggml_mul_mat_set_hint(act, GGML_HINT_SRC0_IS_HADAMARD);
+            ggml_set_name(act, "hx");
+        }
+
+        ggml_tensor * w = ggml_new_tensor_2d(ctx, GGML_TYPE_Q4_0, k, m);
+        ggml_set_name(w, "w");
+        ggml_tensor * out = ggml_mul_mat(ctx, w, act);
+        ggml_set_name(out, "out");
+        return out;
+    }
+
+    void initialize_tensors(ggml_context * ctx) override {
+        for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != nullptr; t = ggml_get_next_tensor(ctx, t)) {
+            if (strcmp(t->name, "h") == 0) {
+                std::vector<float> data(k*k);
+                const float scale = 1.0f / sqrtf((float) k);
+                for (int64_t r = 0; r < k; ++r) {
+                    for (int64_t i = 0; i < k; ++i) {
+                        int64_t v = r & i;
+                        int pop = 0;
+                        while (v) {
+                            pop += v & 1;
+                            v >>= 1;
+                        }
+                        data[r*k + i] = pop & 1 ? -scale : scale;
+                    }
+                }
+                ggml_backend_tensor_set(t, data.data(), 0, data.size()*sizeof(float));
+            } else if (strcmp(t->name, "x") == 0) {
+                std::vector<float> data(k*n);
+                std::mt19937 gen(1234);
+                std::normal_distribution<float> dist(0.0f, 0.25f);
+                for (int64_t r = 0; r < n; ++r) {
+                    for (int64_t i = 0; i < k; ++i) {
+                        float v = dist(gen);
+                        if ((i & 127) == 0) {
+                            v *= 16.0f;
+                        }
+                        data[r*k + i] = v;
+                    }
+                }
+                ggml_backend_tensor_set(t, data.data(), 0, data.size()*sizeof(float));
+            } else {
+                init_tensor_uniform(t);
+            }
+        }
+    }
+
+    double max_nmse_err() override {
+        return 5e-4;
+    }
+
+    uint64_t op_flops(ggml_tensor * t) override {
+        GGML_UNUSED(t);
+        return hadamard ? 2*k*n*(k + m) : 2*m*n*k;
+    }
+
+    bool run_whole_graph() override {
+        return true;
+    }
+
+    std::string op_desc(ggml_tensor * t) override {
+        GGML_UNUSED(t);
+        return hadamard ? "MUL_MAT_W4A4_OUTLIERS_HADAMARD" : "MUL_MAT_W4A4_OUTLIERS";
     }
 };
 
@@ -9962,6 +10057,8 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_mul_mat_hadamard(GGML_TYPE_F32, GGML_TYPE_F16, 128, 4, 128, {2, 3}));
     test_cases.emplace_back(new test_mul_mat_hadamard(GGML_TYPE_F32, GGML_TYPE_F16, 256, 512, 256)); // many rows
     test_cases.emplace_back(new test_mul_mat_w4a4_hadamard(576, 32, 1024));
+    test_cases.emplace_back(new test_mul_mat_w4a4_outliers(false, 576, 32, 1024));
+    test_cases.emplace_back(new test_mul_mat_w4a4_outliers(true,  576, 32, 1024));
 
 #if 0
     // > 4GB A matrix. Too slow to be enabled by default.
@@ -11320,6 +11417,8 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
     test_cases.emplace_back(new test_mul_mat_hadamard(GGML_TYPE_F32, GGML_TYPE_F32, 1024, 2048, 1024));
     test_cases.emplace_back(new test_mul_mat_hadamard(GGML_TYPE_F32, GGML_TYPE_F32, 1024, 7168, 1024));
     test_cases.emplace_back(new test_mul_mat_w4a4_hadamard(4096, 512, 1024));
+    test_cases.emplace_back(new test_mul_mat_w4a4_outliers(false, 4096, 512, 1024));
+    test_cases.emplace_back(new test_mul_mat_w4a4_outliers(true,  4096, 512, 1024));
 
     test_cases.emplace_back(new test_solve_tri(GGML_TYPE_F32, { 64, 64, 4, 4 }, { 32, 64, 4, 4 }));
     test_cases.emplace_back(new test_solve_tri(GGML_TYPE_F32, { 128, 128, 4, 2 }, { 32, 128, 4, 2 }));
