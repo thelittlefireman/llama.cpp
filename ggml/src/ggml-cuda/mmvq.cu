@@ -951,7 +951,7 @@ static __global__ void mul_mat_vec_q_gcn_fast_gemv(
     }
 
     ggml_cuda_pdl_lc();
-    GGML_UNUSED(stride_col_y, stride_col_dst);
+    GGML_UNUSED_VARS(stride_col_y, stride_col_dst);
 }
 
 
