@@ -1282,6 +1282,7 @@ struct test_case {
     }
 
     virtual bool run_whole_graph() { return false; }
+    virtual bool perf_single_run() { return false; }
     virtual std::vector<ggml_tensor *> fusion_test_nodes() { return {}; }
     virtual bool use_weight_context() { return false; }
 
@@ -1633,7 +1634,9 @@ struct test_case {
         // determine number of runs
         int n_runs;
         bool is_cpu = ggml_backend_dev_type(ggml_backend_get_device(backend)) == GGML_BACKEND_DEVICE_TYPE_CPU;
-        if (op_flops(out) > 0) {
+        if (perf_single_run()) {
+            n_runs = 1;
+        } else if (op_flops(out) > 0) {
             // based on flops
             const uint64_t GFLOP = 1000 * 1000 * 1000;
             const uint64_t target_flops_cpu =   8ULL * GFLOP;
@@ -5163,6 +5166,10 @@ struct test_mul_mat_w4a4_hadamard : public test_case {
         return true;
     }
 
+    bool perf_single_run() override {
+        return true;
+    }
+
     std::string op_desc(ggml_tensor * t) override {
         GGML_UNUSED(t);
         return "MUL_MAT_W4A4_HADAMARD";
@@ -5251,6 +5258,10 @@ struct test_mul_mat_w4a4_outliers : public test_case {
     }
 
     bool run_whole_graph() override {
+        return true;
+    }
+
+    bool perf_single_run() override {
         return true;
     }
 
