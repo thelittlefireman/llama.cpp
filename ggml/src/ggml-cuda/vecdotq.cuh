@@ -119,6 +119,10 @@ template <int vdr> static __device__ __forceinline__ float vec_dot_q4_0_q8_1_imp
     const int * v, const int * u, const float & d4, const half2 & ds8) {
 
     int sumi = 0;
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+    int sumi0 = 0;
+    int sumi1 = 0;
+#endif
 
 #pragma unroll
     for (int i = 0; i < vdr; ++i) {
@@ -126,9 +130,18 @@ template <int vdr> static __device__ __forceinline__ float vec_dot_q4_0_q8_1_imp
         const int vi1 = (v[i] >> 4) & 0x0F0F0F0F;
 
         // SIMD dot product of quantized values
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+        sumi0 = ggml_cuda_dp4a(vi0, u[2*i+0], sumi0);
+        sumi1 = ggml_cuda_dp4a(vi1, u[2*i+1], sumi1);
+#else
         sumi = ggml_cuda_dp4a(vi0, u[2*i+0], sumi);
         sumi = ggml_cuda_dp4a(vi1, u[2*i+1], sumi);
+#endif
     }
+
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+    sumi = sumi0 + sumi1;
+#endif
 
     const float2 ds8f = __half22float2(ds8);
 
@@ -143,6 +156,10 @@ template <int vdr> static __device__ __forceinline__ float vec_dot_q4_1_q8_1_imp
     const int * v, const int * u, const half2 & dm4, const half2 & ds8) {
 
     int sumi = 0;
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+    int sumi0 = 0;
+    int sumi1 = 0;
+#endif
 
 #pragma unroll
     for (int i = 0; i < vdr; ++i) {
@@ -150,9 +167,18 @@ template <int vdr> static __device__ __forceinline__ float vec_dot_q4_1_q8_1_imp
         const int vi1 = (v[i] >> 4) & 0x0F0F0F0F;
 
         // SIMD dot product of quantized values
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+        sumi0 = ggml_cuda_dp4a(vi0, u[2*i+0], sumi0);
+        sumi1 = ggml_cuda_dp4a(vi1, u[2*i+1], sumi1);
+#else
         sumi = ggml_cuda_dp4a(vi0, u[2*i+0], sumi);
         sumi = ggml_cuda_dp4a(vi1, u[2*i+1], sumi);
+#endif
     }
+
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+    sumi = sumi0 + sumi1;
+#endif
 
 #ifdef FAST_FP16_AVAILABLE
     const float2 tmp = __half22float2(__hmul2(dm4, ds8));
@@ -176,6 +202,10 @@ template <int vdr> static __device__ __forceinline__ float vec_dot_q5_0_q8_1_imp
     const int * vl, const int * vh, const int * u, const float & d5, const half2 & ds8) {
 
     int sumi = 0;
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+    int sumi0 = 0;
+    int sumi1 = 0;
+#endif
 
 #pragma unroll
     for (int i = 0; i < vdr; ++i) {
@@ -184,15 +214,27 @@ template <int vdr> static __device__ __forceinline__ float vec_dot_q5_0_q8_1_imp
         vi0    |= (vh[i] << 11) & 0x00001000; // 1 -> 12
         vi0    |= (vh[i] << 18) & 0x00100000; // 2 -> 20
         vi0    |= (vh[i] << 25) & 0x10000000; // 3 -> 28
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+        sumi0 = ggml_cuda_dp4a(vi0, u[2*i+0], sumi0); // SIMD dot product of quantized values
+#else
         sumi = ggml_cuda_dp4a(vi0, u[2*i+0], sumi); // SIMD dot product of quantized values
+#endif
 
         int vi1 = (vl[i] >>  4) & 0x0F0F0F0F; // upper 4 qs bits, still need qh as 5th bits
         vi1    |= (vh[i] >> 12) & 0x00000010; // 16 ->  4
         vi1    |= (vh[i] >>  5) & 0x00001000; // 17 -> 12
         vi1    |= (vh[i] <<  2) & 0x00100000; // 18 -> 20
         vi1    |= (vh[i] <<  9) & 0x10000000; // 19 -> 28
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+        sumi1 = ggml_cuda_dp4a(vi1, u[2*i+1], sumi1); // SIMD dot product of quantized values
+#else
         sumi = ggml_cuda_dp4a(vi1, u[2*i+1], sumi); // SIMD dot product of quantized values
+#endif
     }
+
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+    sumi = sumi0 + sumi1;
+#endif
 
     const float2 ds8f = __half22float2(ds8);
 
@@ -207,6 +249,10 @@ template <int vdr> static __device__ __forceinline__ float vec_dot_q5_1_q8_1_imp
     const int * vl, const int * vh, const int * u, const half2 & dm5, const half2 & ds8) {
 
     int sumi = 0;
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+    int sumi0 = 0;
+    int sumi1 = 0;
+#endif
 
 #pragma unroll
     for (int i = 0; i < vdr; ++i) {
@@ -215,15 +261,27 @@ template <int vdr> static __device__ __forceinline__ float vec_dot_q5_1_q8_1_imp
         vi0    |= (vh[i] << 11) & 0x00001000; // 1 -> 12
         vi0    |= (vh[i] << 18) & 0x00100000; // 2 -> 20
         vi0    |= (vh[i] << 25) & 0x10000000; // 3 -> 28
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+        sumi0 = ggml_cuda_dp4a(vi0, u[2*i+0], sumi0); // SIMD dot product of quantized values
+#else
         sumi = ggml_cuda_dp4a(vi0, u[2*i+0], sumi); // SIMD dot product of quantized values
+#endif
 
         int vi1 = (vl[i] >>  4) & 0x0F0F0F0F; // upper 4 qs bits, still need qh as 5th bits
         vi1    |= (vh[i] >> 12) & 0x00000010; // 16 ->  4
         vi1    |= (vh[i] >>  5) & 0x00001000; // 17 -> 12
         vi1    |= (vh[i] <<  2) & 0x00100000; // 18 -> 20
         vi1    |= (vh[i] <<  9) & 0x10000000; // 19 -> 28
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+        sumi1 = ggml_cuda_dp4a(vi1, u[2*i+1], sumi1); // SIMD dot product of quantized values
+#else
         sumi = ggml_cuda_dp4a(vi1, u[2*i+1], sumi); // SIMD dot product of quantized values
+#endif
     }
+
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+    sumi = sumi0 + sumi1;
+#endif
 
 #ifdef FAST_FP16_AVAILABLE
     const float2 tmp = __half22float2(__hmul2(dm5, ds8));
@@ -691,6 +749,10 @@ static __device__ __forceinline__ float vec_dot_q1_0_q8_1(
     const block_q8_1 * bq8_1_chunk = bq8_1 + iqs;
 
     int sumi = 0;
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+    int sumi0 = 0;
+    int sumi1 = 0;
+#endif
 #pragma unroll
     for (int j = 0; j < 2; ++j) {
         const int q  = qs[j];
@@ -714,11 +776,22 @@ static __device__ __forceinline__ float vec_dot_q1_0_q8_1(
         const int v2 = __byte_perm(s2, s3, 0x5410);
         const int v3 = __byte_perm(s2, s3, 0x7632);
 
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+        sumi0 = ggml_cuda_dp4a(v0, u0, sumi0);
+        sumi1 = ggml_cuda_dp4a(v1, u1, sumi1);
+        sumi0 = ggml_cuda_dp4a(v2, u2, sumi0);
+        sumi1 = ggml_cuda_dp4a(v3, u3, sumi1);
+#else
         sumi = ggml_cuda_dp4a(v0, u0, sumi);
         sumi = ggml_cuda_dp4a(v1, u1, sumi);
         sumi = ggml_cuda_dp4a(v2, u2, sumi);
         sumi = ggml_cuda_dp4a(v3, u3, sumi);
+#endif
     }
+
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+    sumi = sumi0 + sumi1;
+#endif
 
     // Apply Q1_0's single scale and this chunk's Q8_1 scale
     const float d8 = __low2float(bq8_1_chunk->ds);
@@ -741,6 +814,10 @@ static __device__ __forceinline__ float vec_dot_q2_0_q8_1(
     const block_q8_1 * bq8_1_chunk = bq8_1 + iqs;
 
     int sumi = 0;
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+    int sumi0 = 0;
+    int sumi1 = 0;
+#endif
 #pragma unroll
     for (int j = 0; j < 4; ++j) {
         const int q  = qs[j];
@@ -762,9 +839,18 @@ static __device__ __forceinline__ float vec_dot_q2_0_q8_1(
         const int qy = __byte_perm(qe, qo, 0x7362);
 #endif // defined(GGML_USE_HIP)
 
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+        sumi0 = ggml_cuda_dp4a(u, qx, sumi0);
+        sumi1 = ggml_cuda_dp4a(v, qy, sumi1);
+#else
         sumi = ggml_cuda_dp4a(u, qx, sumi);
         sumi = ggml_cuda_dp4a(v, qy, sumi);
+#endif
     }
+
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+    sumi = sumi0 + sumi1;
+#endif
 
     // Apply Q2_0's single scale and this chunk's Q8_1 scale
     const float d8 = __low2float(bq8_1_chunk->ds);
@@ -1055,6 +1141,10 @@ static __device__ __forceinline__ float vec_dot_iq2_xxs_q8_1(
     const uint32_t aux32 = get_int_b2(bq2->qs, iqs + 1);
 
     int sumi = 0;
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+    int sumi0 = 0;
+    int sumi1 = 0;
+#endif
 #pragma unroll
     for (int k0 = 0; k0 < 8; k0 += 2) {
         const uint2 grid_pos = ((const uint2*)iq2xxs_grid)[aux8[k0/2]];
@@ -1063,13 +1153,25 @@ static __device__ __forceinline__ float vec_dot_iq2_xxs_q8_1(
         const int signs0 = __vcmpne4(signs & 0x08040201, 0);
         const int grid0 = __vsub4(grid_pos.x ^ signs0, signs0);
         const int u0 = get_int_b4(bq8_1[iqs/2].qs, k0 + 0);
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+        sumi0 = ggml_cuda_dp4a(grid0, u0, sumi0);
+#else
         sumi = ggml_cuda_dp4a(grid0, u0, sumi);
+#endif
 
         const int signs1 = __vcmpne4(signs & 0x80402010, 0);
         const int grid1 = __vsub4(grid_pos.y ^ signs1, signs1);
         const int u1 = get_int_b4(bq8_1[iqs/2].qs, k0 + 1);
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+        sumi1 = ggml_cuda_dp4a(grid1, u1, sumi1);
+#else
         sumi = ggml_cuda_dp4a(grid1, u1, sumi);
+#endif
     }
+
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+    sumi = sumi0 + sumi1;
+#endif
 
     const int ls = aux32 >> 27 | 1; // (scale * 2 + 1)
     sumi = sumi * ls / 8;           // (sumi * scale + sumi / 2) / 4
@@ -1179,6 +1281,10 @@ static __device__ __forceinline__ float vec_dot_iq3_xxs_q8_1(
     const uint32_t aux32 = get_int_b2(bq3->qs, QK_K/16 + iqs/2);
 
     int sumi = 0;
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+    int sumi0 = 0;
+    int sumi1 = 0;
+#endif
 #pragma unroll
     for (int l0 = 0; l0 < 8; l0 += 2) {
         const int2 grid_pos = make_int2(iq3xxs_grid[q3[l0 + 0]], iq3xxs_grid[q3[l0 + 1]]);
@@ -1194,9 +1300,18 @@ static __device__ __forceinline__ float vec_dot_iq3_xxs_q8_1(
 
         const int u1 = get_int_b4(bq8_1[iqs/2].qs, l0 + 1);
 
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+        sumi0 = ggml_cuda_dp4a(grid_l, u0, sumi0);
+        sumi1 = ggml_cuda_dp4a(grid_h, u1, sumi1);
+#else
         sumi = ggml_cuda_dp4a(grid_l, u0, sumi);
         sumi = ggml_cuda_dp4a(grid_h, u1, sumi);
+#endif
     }
+
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+    sumi = sumi0 + sumi1;
+#endif
 
     const int ls = aux32 >> 28;
     sumi = (ls*sumi + sumi/2)/2;
@@ -1222,6 +1337,10 @@ static __device__ __forceinline__ float vec_dot_iq3_s_q8_1(
     const uint8_t * signs_packed_8  = (const uint8_t *) &signs_packed_32;
 
     int sumi = 0;
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+    int sumi0 = 0;
+    int sumi1 = 0;
+#endif
 #pragma unroll
     for (int l0 = 0; l0 < 8; l0 += 2) {
         const int2 grid_pos = make_int2(
@@ -1237,9 +1356,18 @@ static __device__ __forceinline__ float vec_dot_iq3_s_q8_1(
         const int u0 = get_int_b4(bq8_1[iqs/2].qs, l0 + 0);
         const int u1 = get_int_b4(bq8_1[iqs/2].qs, l0 + 1);
 
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+        sumi0 = ggml_cuda_dp4a(grid_l, u0, sumi0);
+        sumi1 = ggml_cuda_dp4a(grid_h, u1, sumi1);
+#else
         sumi = ggml_cuda_dp4a(grid_l, u0, sumi);
         sumi = ggml_cuda_dp4a(grid_h, u1, sumi);
+#endif
     }
+
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+    sumi = sumi0 + sumi1;
+#endif
 
     sumi *= 1 + 2*((bq3->scales[iqs/4] >> ((iqs << 1) & 0x04)) & 0x0F);
 
@@ -1260,6 +1388,10 @@ static __device__ __forceinline__ float vec_dot_iq1_s_q8_1(
     const int qh = bq1->qh[iqs];
 
     int sumi = 0;
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+    int sumi0 = 0;
+    int sumi1 = 0;
+#endif
 #pragma unroll
     for (int l0 = 0; l0 < 8; l0 += 2) {
         const int grid = iq1s_grid_gpu[qs[l0/2] | (((qh >> 3*(l0/2)) & 0x07) << 8)];
@@ -1270,9 +1402,18 @@ static __device__ __forceinline__ float vec_dot_iq1_s_q8_1(
         const int u0 = get_int_b4(bq8_1[iqs].qs, l0 + 0);
         const int u1 = get_int_b4(bq8_1[iqs].qs, l0 + 1);
 
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+        sumi0 = ggml_cuda_dp4a(grid0, u0, sumi0);
+        sumi1 = ggml_cuda_dp4a(grid1, u1, sumi1);
+#else
         sumi = ggml_cuda_dp4a(grid0, u0, sumi);
         sumi = ggml_cuda_dp4a(grid1, u1, sumi);
+#endif
     }
+
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+    sumi = sumi0 + sumi1;
+#endif
 
     const float  d1q   = __half2float(bq1->d) * (((qh >> 11) & 0x0E) + 1);
     const float  delta = -1.0f + IQ1S_DELTA - (qh & 0x8000) * (2.0f*IQ1S_DELTA/0x8000);
@@ -1360,6 +1501,10 @@ static __device__ __forceinline__ float vec_dot_iq4_xs_q8_1(
     const block_iq4_xs * bq4 = (const block_iq4_xs *) vbq + kbx;
 
     int sumi = 0;
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+    int sumi0 = 0;
+    int sumi1 = 0;
+#endif
 #pragma unroll
     for (int j = 0; j < 4; ++j) {
         const int aux_q4 = get_int_b4(bq4->qs, iqs + j);
@@ -1368,9 +1513,18 @@ static __device__ __forceinline__ float vec_dot_iq4_xs_q8_1(
         const int u0 = get_int_b4(bq8_1[iqs/4].qs, j + 0);
         const int u1 = get_int_b4(bq8_1[iqs/4].qs, j + 4);
 
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+        sumi0 = ggml_cuda_dp4a(v.x, u0, sumi0);
+        sumi1 = ggml_cuda_dp4a(v.y, u1, sumi1);
+#else
         sumi = ggml_cuda_dp4a(v.x, u0, sumi);
         sumi = ggml_cuda_dp4a(v.y, u1, sumi);
+#endif
     }
+
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+    sumi = sumi0 + sumi1;
+#endif
 
     const int ls = ((bq4->scales_l[iqs/8] >> (iqs & 0x04)) & 0x0F) | (((bq4->scales_h >> (iqs/2)) & 0x03) << 4);
     sumi *= ls - 32;
