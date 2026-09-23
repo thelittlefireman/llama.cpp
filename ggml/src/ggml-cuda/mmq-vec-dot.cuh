@@ -9,7 +9,7 @@ using namespace ggml_cuda_mma;
 
 #if defined(GGML_USE_HIP) && defined(__gfx906__)
 template <ggml_type type, int J, bool fallback> static __device__ __forceinline__ void ggml_cuda_mmq_vec_dot_q4_0_q4_0_dp8a(
-        const int * __restrict__ x, const int * __restrict__ y, float * __restrict__ sum, const int k00, const bool scale16, const bool scale8, const bool scale8_fp32, const bool residual) {
+        const int * __restrict__ x, const int * __restrict__ y, float * __restrict__ sum, const int k00, const bool scale16, const bool scale8, const bool scale8_fp32, const bool residual, const float residual_div) {
     constexpr int warp_size = ggml_cuda_get_physical_warp_size();
     constexpr int nwarps    = ggml_cuda_mmq_get_nthreads(type, J, fallback) / warp_size;
     constexpr int I         = ggml_cuda_mmq_get_I(type, J, fallback);
@@ -36,7 +36,7 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
                 const int * vy = &y_qs[j*MMQ_TILE_Y_K + 4*group];
                 const float dx = x_df[i*(MMQ_TILE_NE_K/QI4_0) + i/QI4_0 + k0/(QR4_0*QI4_0)];
                 if (residual) {
-                    constexpr float residual_scale = 1.0f/14.0f;
+                    const float residual_scale = 1.0f/residual_div;
                     const int * vyr = vy + QK8_1_MMQ/(2*sizeof(int));
                     int sumi0 = 0;
                     int sumi1 = 0;
