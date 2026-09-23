@@ -46,17 +46,16 @@ static __device__ __forceinline__ void ggml_cuda_mmq_vec_dot_q4_0_q4_0_dp8a(
                     sumi = ggml_cuda_dp8a(vx[l] ^ 0x88888888, vy4[l], sumi);
                 }
 
-                const float dy = __low2float(y_ds[j*MMQ_TILE_Y_K + group]);
+                const half2 ds = y_ds[j*MMQ_TILE_Y_K + group];
+                const float dy = __low2float(ds);
                 if constexpr (residual) {
                     const int * vyr = vy + QK8_1_MMQ/(2*sizeof(int));
-                    int vyr4[VDR_Q4_0_Q8_1_MMQ];
-                    ggml_cuda_memcpy_1<sizeof(vyr4)>(vyr4, vyr);
+                    const int residual_mask = (int) __high2float(ds);
+                    const int l0 = __builtin_ctz((unsigned int) residual_mask);
+                    const int l1 = __builtin_ctz((unsigned int) (residual_mask & (residual_mask - 1)));
 
-                    int sumr = 0;
-#pragma unroll
-                    for (int l = 0; l < VDR_Q4_0_Q8_1_MMQ; ++l) {
-                        sumr = ggml_cuda_dp8a(vx[l] ^ 0x88888888, vyr4[l], sumr);
-                    }
+                    int sumr = ggml_cuda_dp8a(vx[l0] ^ 0x88888888, vyr[l0], 0);
+                    sumr = ggml_cuda_dp8a(vx[l1] ^ 0x88888888, vyr[l1], sumr);
                     sum[j0/nwarps*I/warp_size + i0/warp_size] += dx*dy*(sumi + sumr*(1.0f/16.0f));
                 } else {
                     sum[j0/nwarps*I/warp_size + i0/warp_size] += sumi*dx*dy;
