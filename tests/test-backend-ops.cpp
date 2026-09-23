@@ -1528,9 +1528,12 @@ struct test_case {
                 }
             }
 
-            double err = ud->tc->err(f1.data(), f2.data(), f1.size());
-            if (err > ud->tc->max_err(ud->backend1)) {
-                printf("[%s] ERR = %.9f > %.9f ", ggml_op_desc(t1), err, ud->tc->max_err(ud->backend1));
+            const double err = ud->tc->err(f1.data(), f2.data(), f1.size());
+            const double max_err = ud->tc->max_err(ud->backend1);
+            if (getenv("GGML_TEST_PRINT_ERR") || err > max_err) {
+                printf("[%s] ERR = %.9f %s %.9f ", ggml_op_desc(t1), err, err > max_err ? ">" : "<=", max_err);
+            }
+            if (err > max_err) {
                 //for (int i = 0; i < (int) f1.size(); i++) {
                 //    printf("%5d %9.6f %9.6f, diff = %9.6f\n", i, f1[i], f2[i], f1[i] - f2[i]);
                 //}
