@@ -453,11 +453,49 @@ static __global__ void quantize_mmq_mxfp4(const float * __restrict__ x,
     GGML_UNUSED(n_expert_used);
 }
 
+static __device__ __forceinline__ int quantize_i4(const float x, const float d_inv) {
+    return max(-8, min(7, (int) roundf(x*d_inv)));
+}
+
+static __device__ __forceinline__ float optimize_i4_scale(const float4 x0, const float4 x1, float d) {
+#pragma unroll
+    for (int iter = 0; iter < 2; ++iter) {
+        const float d_inv = d != 0.0f ? 1.0f / d : 0.0f;
+        const int q0 = quantize_i4(x0.x, d_inv);
+        const int q1 = quantize_i4(x0.y, d_inv);
+        const int q2 = quantize_i4(x0.z, d_inv);
+        const int q3 = quantize_i4(x0.w, d_inv);
+        const int q4 = quantize_i4(x1.x, d_inv);
+        const int q5 = quantize_i4(x1.y, d_inv);
+        const int q6 = quantize_i4(x1.z, d_inv);
+        const int q7 = quantize_i4(x1.w, d_inv);
+        const float num = x0.x*q0 + x0.y*q1 + x0.z*q2 + x0.w*q3 + x1.x*q4 + x1.y*q5 + x1.z*q6 + x1.w*q7;
+        const int den = q0*q0 + q1*q1 + q2*q2 + q3*q3 + q4*q4 + q5*q5 + q6*q6 + q7*q7;
+        if (den > 0) {
+            d = num / den;
+        }
+    }
+    return d;
+}
+
+static __device__ __forceinline__ float i4_scale_error(const float4 x0, const float4 x1, const float d) {
+    const float d_inv = d != 0.0f ? 1.0f / d : 0.0f;
+    const float e0 = x0.x - d*quantize_i4(x0.x, d_inv);
+    const float e1 = x0.y - d*quantize_i4(x0.y, d_inv);
+    const float e2 = x0.z - d*quantize_i4(x0.z, d_inv);
+    const float e3 = x0.w - d*quantize_i4(x0.w, d_inv);
+    const float e4 = x1.x - d*quantize_i4(x1.x, d_inv);
+    const float e5 = x1.y - d*quantize_i4(x1.y, d_inv);
+    const float e6 = x1.z - d*quantize_i4(x1.z, d_inv);
+    const float e7 = x1.w - d*quantize_i4(x1.w, d_inv);
+    return e0*e0 + e1*e1 + e2*e2 + e3*e3 + e4*e4 + e5*e5 + e6*e6 + e7*e7;
+}
+
 // scatter: grid over tokens, quantize once, write to all the token's compact rows
 static __global__ void quantize_mmq_q4_0(
         const float * __restrict__ x, void * __restrict__ vy,
         const int64_t ne00, const int64_t s01, const int64_t s02, const int64_t s03,
-        const int64_t ne0, const int ne1, const int ne2, const float amax_scale, const bool full_range, const bool scale16, const bool scale8, const bool scale8_fp32) {
+        const int64_t ne0, const int ne1, const int ne2, const float amax_scale, const bool full_range, const bool scale16, const bool scale8, const bool scale8_fp32, const bool mse_scale) {
 
     const int64_t tid = (int64_t) blockDim.x*blockIdx.y + threadIdx.x;
     const int64_t i0 = tid*8;
@@ -493,9 +531,15 @@ static __global__ void quantize_mmq_q4_0(
 
     float d;
     if (full_range) {
-        const float d_pos = fmaxf(vmax / 7.0f, -vmin / 8.0f);
-        const float d_neg = fmaxf(vmax / 8.0f, -vmin / 7.0f);
-        d = (d_pos <= d_neg ? d_pos : -d_neg) * amax_scale;
+        float d_pos = fmaxf(vmax / 7.0f, -vmin / 8.0f) * amax_scale;
+        float d_neg = -fmaxf(vmax / 8.0f, -vmin / 7.0f) * amax_scale;
+        if (mse_scale) {
+            d_pos = optimize_i4_scale(x0, x1, d_pos);
+            d_neg = optimize_i4_scale(x0, x1, d_neg);
+            d = i4_scale_error(x0, x1, d_pos) <= i4_scale_error(x0, x1, d_neg) ? d_pos : d_neg;
+        } else {
+            d = fabsf(d_pos) <= fabsf(d_neg) ? d_pos : d_neg;
+        }
     } else {
         d = fmaxf(fabsf(vmax), fabsf(vmin)) * amax_scale / 7.0f;
     }
@@ -661,7 +705,7 @@ void quantize_row_q8_1_cuda(
 void quantize_mmq_q4_0_cuda(
         const float * x, const int32_t * ids, void * vy, const ggml_type type_src0,
         const int64_t ne00, const int64_t s01, const int64_t s02, const int64_t s03,
-        const int64_t ne0, const int64_t ne1, const int64_t ne2, const int64_t ne3, const float amax_scale, const bool full_range, const bool scale16, const bool scale8, const bool scale8_fp32, cudaStream_t stream) {
+        const int64_t ne0, const int64_t ne1, const int64_t ne2, const int64_t ne3, const float amax_scale, const bool full_range, const bool scale16, const bool scale8, const bool scale8_fp32, const bool mse_scale, cudaStream_t stream) {
     GGML_ASSERT(!ids);
     GGML_ASSERT(type_src0 == GGML_TYPE_Q4_0);
     GGML_ASSERT(ne00 % QK4_0 == 0);
@@ -670,7 +714,7 @@ void quantize_mmq_q4_0_cuda(
     const int64_t block_num_y = (ne0 + 8*CUDA_QUANTIZE_BLOCK_SIZE_MMQ - 1) / (8*CUDA_QUANTIZE_BLOCK_SIZE_MMQ);
     const dim3 num_blocks(ne1, block_num_y, ne2*ne3);
     const dim3 block_size(CUDA_QUANTIZE_BLOCK_SIZE_MMQ, 1, 1);
-    quantize_mmq_q4_0<<<num_blocks, block_size, 0, stream>>>(x, vy, ne00, s01, s02, s03, ne0, ne1, ne2, amax_scale, full_range, scale16, scale8, scale8_fp32);
+    quantize_mmq_q4_0<<<num_blocks, block_size, 0, stream>>>(x, vy, ne00, s01, s02, s03, ne0, ne1, ne2, amax_scale, full_range, scale16, scale8, scale8_fp32, mse_scale);
 }
 
 void quantize_mmq_q8_1_cuda(
