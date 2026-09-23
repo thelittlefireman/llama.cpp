@@ -9,7 +9,7 @@ using namespace ggml_cuda_mma;
 
 #if defined(GGML_USE_HIP) && defined(__gfx906__)
 template <ggml_type type, int J, bool fallback> static __device__ __forceinline__ void ggml_cuda_mmq_vec_dot_q4_0_q4_0_dp8a(
-        const int * __restrict__ x, const int * __restrict__ y, float * __restrict__ sum, const int k00) {
+        const int * __restrict__ x, const int * __restrict__ y, float * __restrict__ sum, const int k00, const bool scale16) {
     constexpr int warp_size = ggml_cuda_get_physical_warp_size();
     constexpr int nwarps    = ggml_cuda_mmq_get_nthreads(type, J, fallback) / warp_size;
     constexpr int I         = ggml_cuda_mmq_get_I(type, J, fallback);
@@ -34,16 +34,27 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
                 const int i = i0 + threadIdx.x;
                 const int * vx = &x_qs[i*(MMQ_TILE_NE_K + 1) + k0/QR4_0];
                 const int * vy = &y_qs[j*MMQ_TILE_Y_K + 4*group];
-                int sumi = 0;
-
-#pragma unroll
-                for (int l = 0; l < VDR_Q4_0_Q8_1_MMQ; ++l) {
-                    sumi = ggml_cuda_dp8a(vx[l] ^ 0x88888888, vy[l], sumi);
-                }
-
                 const float dx = x_df[i*(MMQ_TILE_NE_K/QI4_0) + i/QI4_0 + k0/(QR4_0*QI4_0)];
-                const float dy = __low2float(y_ds[j*MMQ_TILE_Y_K + group]);
-                sum[j0/nwarps*I/warp_size + i0/warp_size] += sumi*dx*dy;
+                if (scale16) {
+                    int sumi0 = 0;
+                    int sumi1 = 0;
+#pragma unroll
+                    for (int l = 0; l < VDR_Q4_0_Q8_1_MMQ; ++l) {
+                        const int wx = vx[l] ^ 0x88888888;
+                        sumi0 = ggml_cuda_dp8a(wx & 0x0F0F0F0F, vy[l] & 0x0F0F0F0F, sumi0);
+                        sumi1 = ggml_cuda_dp8a(wx & 0xF0F0F0F0, vy[l] & 0xF0F0F0F0, sumi1);
+                    }
+                    const float2 dy = __half22float2(y_ds[j*MMQ_TILE_Y_K + group]);
+                    sum[j0/nwarps*I/warp_size + i0/warp_size] += dx*(sumi0*dy.x + sumi1*dy.y);
+                } else {
+                    int sumi = 0;
+#pragma unroll
+                    for (int l = 0; l < VDR_Q4_0_Q8_1_MMQ; ++l) {
+                        sumi = ggml_cuda_dp8a(vx[l] ^ 0x88888888, vy[l], sumi);
+                    }
+                    const float dy = __low2float(y_ds[j*MMQ_TILE_Y_K + group]);
+                    sum[j0/nwarps*I/warp_size + i0/warp_size] += sumi*dx*dy;
+                }
             }
         }
     }

@@ -457,7 +457,7 @@ static __global__ void quantize_mmq_mxfp4(const float * __restrict__ x,
 static __global__ void quantize_mmq_q4_0(
         const float * __restrict__ x, void * __restrict__ vy,
         const int64_t ne00, const int64_t s01, const int64_t s02, const int64_t s03,
-        const int64_t ne0, const int ne1, const int ne2, const float amax_scale, const bool full_range) {
+        const int64_t ne0, const int ne1, const int ne2, const float amax_scale, const bool full_range, const bool scale16) {
 
     const int64_t tid = (int64_t) blockDim.x*blockIdx.y + threadIdx.x;
     const int64_t i0 = tid*8;
@@ -480,41 +480,51 @@ static __global__ void quantize_mmq_q4_0(
         x1 = x4[(base_idx + group_base + 16 + 4*lane) / 4];
     }
 
-    float amax = fabsf(x0.x);
-    amax = fmaxf(amax, fabsf(x0.y));
-    amax = fmaxf(amax, fabsf(x0.z));
-    amax = fmaxf(amax, fabsf(x0.w));
-    amax = fmaxf(amax, fabsf(x1.x));
-    amax = fmaxf(amax, fabsf(x1.y));
-    amax = fmaxf(amax, fabsf(x1.z));
-    amax = fmaxf(amax, fabsf(x1.w));
-    amax = fmaxf(amax, __shfl_xor_sync(0xFFFFFFFF, amax, 1, WARP_SIZE));
-    amax = fmaxf(amax, __shfl_xor_sync(0xFFFFFFFF, amax, 2, WARP_SIZE));
+    float max0 = fmaxf(fmaxf(x0.x, x0.y), fmaxf(x0.z, x0.w));
+    float min0 = fminf(fminf(x0.x, x0.y), fminf(x0.z, x0.w));
+    float max1 = fmaxf(fmaxf(x1.x, x1.y), fmaxf(x1.z, x1.w));
+    float min1 = fminf(fminf(x1.x, x1.y), fminf(x1.z, x1.w));
+    max0 = fmaxf(max0, __shfl_xor_sync(0xFFFFFFFF, max0, 1, WARP_SIZE));
+    max0 = fmaxf(max0, __shfl_xor_sync(0xFFFFFFFF, max0, 2, WARP_SIZE));
+    min0 = fminf(min0, __shfl_xor_sync(0xFFFFFFFF, min0, 1, WARP_SIZE));
+    min0 = fminf(min0, __shfl_xor_sync(0xFFFFFFFF, min0, 2, WARP_SIZE));
+    max1 = fmaxf(max1, __shfl_xor_sync(0xFFFFFFFF, max1, 1, WARP_SIZE));
+    max1 = fmaxf(max1, __shfl_xor_sync(0xFFFFFFFF, max1, 2, WARP_SIZE));
+    min1 = fminf(min1, __shfl_xor_sync(0xFFFFFFFF, min1, 1, WARP_SIZE));
+    min1 = fminf(min1, __shfl_xor_sync(0xFFFFFFFF, min1, 2, WARP_SIZE));
 
-    float d;
-    if (full_range) {
-        float vmax = fmaxf(fmaxf(fmaxf(x0.x, x0.y), fmaxf(x0.z, x0.w)), fmaxf(fmaxf(x1.x, x1.y), fmaxf(x1.z, x1.w)));
-        float vmin = fminf(fminf(fminf(x0.x, x0.y), fminf(x0.z, x0.w)), fminf(fminf(x1.x, x1.y), fminf(x1.z, x1.w)));
-        vmax = fmaxf(vmax, __shfl_xor_sync(0xFFFFFFFF, vmax, 1, WARP_SIZE));
-        vmax = fmaxf(vmax, __shfl_xor_sync(0xFFFFFFFF, vmax, 2, WARP_SIZE));
-        vmin = fminf(vmin, __shfl_xor_sync(0xFFFFFFFF, vmin, 1, WARP_SIZE));
-        vmin = fminf(vmin, __shfl_xor_sync(0xFFFFFFFF, vmin, 2, WARP_SIZE));
-        const float d_pos = fmaxf(vmax / 7.0f, -vmin / 8.0f);
-        const float d_neg = fmaxf(vmax / 8.0f, -vmin / 7.0f);
-        d = (d_pos <= d_neg ? d_pos : -d_neg) * amax_scale;
-    } else {
-        d = amax * amax_scale / 7.0f;
+    if (!scale16) {
+        max0 = fmaxf(max0, max1);
+        min0 = fminf(min0, min1);
+        max1 = max0;
+        min1 = min0;
     }
-    const float d_inv = d != 0.0f ? 1.0f / d : 0.0f;
+
+    float d0;
+    float d1;
+    if (full_range) {
+        const float d0_pos = fmaxf(max0 / 7.0f, -min0 / 8.0f);
+        const float d0_neg = fmaxf(max0 / 8.0f, -min0 / 7.0f);
+        const float d1_pos = fmaxf(max1 / 7.0f, -min1 / 8.0f);
+        const float d1_neg = fmaxf(max1 / 8.0f, -min1 / 7.0f);
+        d0 = (d0_pos <= d0_neg ? d0_pos : -d0_neg) * amax_scale;
+        d1 = (d1_pos <= d1_neg ? d1_pos : -d1_neg) * amax_scale;
+    } else {
+        d0 = fmaxf(fabsf(max0), fabsf(min0)) * amax_scale / 7.0f;
+        d1 = fmaxf(fabsf(max1), fabsf(min1)) * amax_scale / 7.0f;
+    }
+
+    const float d0_inv = d0 != 0.0f ? 1.0f / d0 : 0.0f;
+    const float d1_inv = d1 != 0.0f ? 1.0f / d1 : 0.0f;
     const int qmin = full_range ? -8 : -7;
-    const int q0 = max(qmin, min(7, (int) roundf(x0.x*d_inv)));
-    const int q1 = max(qmin, min(7, (int) roundf(x0.y*d_inv)));
-    const int q2 = max(qmin, min(7, (int) roundf(x0.z*d_inv)));
-    const int q3 = max(qmin, min(7, (int) roundf(x0.w*d_inv)));
-    const int q4 = max(qmin, min(7, (int) roundf(x1.x*d_inv)));
-    const int q5 = max(qmin, min(7, (int) roundf(x1.y*d_inv)));
-    const int q6 = max(qmin, min(7, (int) roundf(x1.z*d_inv)));
-    const int q7 = max(qmin, min(7, (int) roundf(x1.w*d_inv)));
+    const int q0 = max(qmin, min(7, (int) roundf(x0.x*d0_inv)));
+    const int q1 = max(qmin, min(7, (int) roundf(x0.y*d0_inv)));
+    const int q2 = max(qmin, min(7, (int) roundf(x0.z*d0_inv)));
+    const int q3 = max(qmin, min(7, (int) roundf(x0.w*d0_inv)));
+    const int q4 = max(qmin, min(7, (int) roundf(x1.x*d1_inv)));
+    const int q5 = max(qmin, min(7, (int) roundf(x1.y*d1_inv)));
+    const int q6 = max(qmin, min(7, (int) roundf(x1.z*d1_inv)));
+    const int q7 = max(qmin, min(7, (int) roundf(x1.w*d1_inv)));
 
     const uint32_t packed = ((uint32_t) q0 & 0x0Fu) | (((uint32_t) q4 & 0x0Fu) << 4) |
                             (((uint32_t) q1 & 0x0Fu) << 8) | (((uint32_t) q5 & 0x0Fu) << 12) |
@@ -530,7 +540,7 @@ static __global__ void quantize_mmq_q4_0(
     yqs[4*group + lane] = (int) packed;
 
     if (lane == 0) {
-        y[ib].ds4[group] = make_half2(d, 0.0f);
+        y[ib].ds4[group] = make_half2(d0, scale16 ? d1 : 0.0f);
     }
 }
 
@@ -655,7 +665,7 @@ void quantize_row_q8_1_cuda(
 void quantize_mmq_q4_0_cuda(
         const float * x, const int32_t * ids, void * vy, const ggml_type type_src0,
         const int64_t ne00, const int64_t s01, const int64_t s02, const int64_t s03,
-        const int64_t ne0, const int64_t ne1, const int64_t ne2, const int64_t ne3, const float amax_scale, const bool full_range, cudaStream_t stream) {
+        const int64_t ne0, const int64_t ne1, const int64_t ne2, const int64_t ne3, const float amax_scale, const bool full_range, const bool scale16, cudaStream_t stream) {
     GGML_ASSERT(!ids);
     GGML_ASSERT(type_src0 == GGML_TYPE_Q4_0);
     GGML_ASSERT(ne00 % QK4_0 == 0);
@@ -664,7 +674,7 @@ void quantize_mmq_q4_0_cuda(
     const int64_t block_num_y = (ne0 + 8*CUDA_QUANTIZE_BLOCK_SIZE_MMQ - 1) / (8*CUDA_QUANTIZE_BLOCK_SIZE_MMQ);
     const dim3 num_blocks(ne1, block_num_y, ne2*ne3);
     const dim3 block_size(CUDA_QUANTIZE_BLOCK_SIZE_MMQ, 1, 1);
-    quantize_mmq_q4_0<<<num_blocks, block_size, 0, stream>>>(x, vy, ne00, s01, s02, s03, ne0, ne1, ne2, amax_scale, full_range);
+    quantize_mmq_q4_0<<<num_blocks, block_size, 0, stream>>>(x, vy, ne00, s01, s02, s03, ne0, ne1, ne2, amax_scale, full_range, scale16);
 }
 
 void quantize_mmq_q8_1_cuda(
