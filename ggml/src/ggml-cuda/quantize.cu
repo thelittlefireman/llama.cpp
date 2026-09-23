@@ -499,13 +499,13 @@ static __global__ void quantize_mmq_q4_0(
         vmax = fmaxf(vmax, __shfl_xor_sync(0xFFFFFFFF, vmax, 2, WARP_SIZE));
         vmin = fminf(vmin, __shfl_xor_sync(0xFFFFFFFF, vmin, 1, WARP_SIZE));
         vmin = fminf(vmin, __shfl_xor_sync(0xFFFFFFFF, vmin, 2, WARP_SIZE));
-        const float d_pos = vmax > 0.0f ? vmax / 7.0f : 0.0f;
-        const float d_neg = vmin < 0.0f ? -vmin / 8.0f : 0.0f;
-        d = fmaxf(d_pos, d_neg) * amax_scale;
+        const float d_pos = fmaxf(vmax / 7.0f, -vmin / 8.0f);
+        const float d_neg = fmaxf(vmax / 8.0f, -vmin / 7.0f);
+        d = (d_pos <= d_neg ? d_pos : -d_neg) * amax_scale;
     } else {
         d = amax * amax_scale / 7.0f;
     }
-    const float d_inv = d > 0.0f ? 1.0f / d : 0.0f;
+    const float d_inv = d != 0.0f ? 1.0f / d : 0.0f;
     const int qmin = full_range ? -8 : -7;
     const int q0 = max(qmin, min(7, (int) roundf(x0.x*d_inv)));
     const int q1 = max(qmin, min(7, (int) roundf(x0.y*d_inv)));
