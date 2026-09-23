@@ -29,7 +29,7 @@ void quantize_mmq_q8_1_cuda(
 void quantize_mmq_q4_0_cuda(
         const float * x, const int32_t * ids, void * vy,
         ggml_type type_src0, int64_t ne00, int64_t s01, int64_t s02, int64_t s03,
-        int64_t ne0, int64_t ne1, int64_t ne2, int64_t ne3, float amax_scale, bool full_range, bool scale16, bool scale8, bool scale8_fp32, bool mse_scale, bool residual, cudaStream_t stream);
+        int64_t ne0, int64_t ne1, int64_t ne2, int64_t ne3, float amax_scale, bool full_range, bool scale16, bool scale8, bool scale8_fp32, bool mse_scale, bool residual, bool residual_mse, cudaStream_t stream);
 
 void quantize_mmq_fp4_cuda(const float *   x,
                              const int32_t * ids,
