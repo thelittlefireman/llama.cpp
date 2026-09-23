@@ -457,7 +457,7 @@ static __global__ void quantize_mmq_mxfp4(const float * __restrict__ x,
 static __global__ void quantize_mmq_q4_0(
         const float * __restrict__ x, void * __restrict__ vy,
         const int64_t ne00, const int64_t s01, const int64_t s02, const int64_t s03,
-        const int64_t ne0, const int ne1, const int ne2, const float amax_scale, const bool full_range, const bool scale16) {
+        const int64_t ne0, const int ne1, const int ne2, const float amax_scale, const bool full_range, const bool scale16, const bool scale8) {
 
     const int64_t tid = (int64_t) blockDim.x*blockIdx.y + threadIdx.x;
     const int64_t i0 = tid*8;
@@ -482,11 +482,13 @@ static __global__ void quantize_mmq_q4_0(
 
     float vmax = fmaxf(fmaxf(fmaxf(x0.x, x0.y), fmaxf(x0.z, x0.w)), fmaxf(fmaxf(x1.x, x1.y), fmaxf(x1.z, x1.w)));
     float vmin = fminf(fminf(fminf(x0.x, x0.y), fminf(x0.z, x0.w)), fminf(fminf(x1.x, x1.y), fminf(x1.z, x1.w)));
-    vmax = fmaxf(vmax, __shfl_xor_sync(0xFFFFFFFF, vmax, 1, WARP_SIZE));
-    vmin = fminf(vmin, __shfl_xor_sync(0xFFFFFFFF, vmin, 1, WARP_SIZE));
-    if (!scale16) {
-        vmax = fmaxf(vmax, __shfl_xor_sync(0xFFFFFFFF, vmax, 2, WARP_SIZE));
-        vmin = fminf(vmin, __shfl_xor_sync(0xFFFFFFFF, vmin, 2, WARP_SIZE));
+    if (!scale8) {
+        vmax = fmaxf(vmax, __shfl_xor_sync(0xFFFFFFFF, vmax, 1, WARP_SIZE));
+        vmin = fminf(vmin, __shfl_xor_sync(0xFFFFFFFF, vmin, 1, WARP_SIZE));
+        if (!scale16) {
+            vmax = fmaxf(vmax, __shfl_xor_sync(0xFFFFFFFF, vmax, 2, WARP_SIZE));
+            vmin = fminf(vmin, __shfl_xor_sync(0xFFFFFFFF, vmin, 2, WARP_SIZE));
+        }
     }
 
     float d;
@@ -522,8 +524,11 @@ static __global__ void quantize_mmq_q4_0(
     int * yqs = (int *) y[ib].qs;
     yqs[4*group + lane] = (int) packed;
 
-    const float d1 = scale16 ? __shfl_xor_sync(0xFFFFFFFF, d, 2, WARP_SIZE) : 0.0f;
-    if (lane == 0) {
+    if (scale8) {
+        half * y_d8 = (half *) (y[ib].qs + QK8_1_MMQ/2);
+        y_d8[4*group + lane] = __float2half(d);
+    } else if (lane == 0) {
+        const float d1 = scale16 ? __shfl_xor_sync(0xFFFFFFFF, d, 2, WARP_SIZE) : 0.0f;
         y[ib].ds4[group] = make_half2(d, d1);
     }
 }
@@ -649,7 +654,7 @@ void quantize_row_q8_1_cuda(
 void quantize_mmq_q4_0_cuda(
         const float * x, const int32_t * ids, void * vy, const ggml_type type_src0,
         const int64_t ne00, const int64_t s01, const int64_t s02, const int64_t s03,
-        const int64_t ne0, const int64_t ne1, const int64_t ne2, const int64_t ne3, const float amax_scale, const bool full_range, const bool scale16, cudaStream_t stream) {
+        const int64_t ne0, const int64_t ne1, const int64_t ne2, const int64_t ne3, const float amax_scale, const bool full_range, const bool scale16, const bool scale8, cudaStream_t stream) {
     GGML_ASSERT(!ids);
     GGML_ASSERT(type_src0 == GGML_TYPE_Q4_0);
     GGML_ASSERT(ne00 % QK4_0 == 0);
@@ -658,7 +663,7 @@ void quantize_mmq_q4_0_cuda(
     const int64_t block_num_y = (ne0 + 8*CUDA_QUANTIZE_BLOCK_SIZE_MMQ - 1) / (8*CUDA_QUANTIZE_BLOCK_SIZE_MMQ);
     const dim3 num_blocks(ne1, block_num_y, ne2*ne3);
     const dim3 block_size(CUDA_QUANTIZE_BLOCK_SIZE_MMQ, 1, 1);
-    quantize_mmq_q4_0<<<num_blocks, block_size, 0, stream>>>(x, vy, ne00, s01, s02, s03, ne0, ne1, ne2, amax_scale, full_range, scale16);
+    quantize_mmq_q4_0<<<num_blocks, block_size, 0, stream>>>(x, vy, ne00, s01, s02, s03, ne0, ne1, ne2, amax_scale, full_range, scale16, scale8);
 }
 
 void quantize_mmq_q8_1_cuda(

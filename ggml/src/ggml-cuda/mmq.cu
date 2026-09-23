@@ -138,7 +138,10 @@ void ggml_cuda_mul_mat_q(
     const bool gcn_w4a4_full_range = gcn_w4a4_full_range_env && atoi(gcn_w4a4_full_range_env) != 0;
     const char * gcn_w4a4_scale16_env = getenv("GGML_CUDA_GCN_W4A4_SCALE16");
     const bool gcn_w4a4_scale16 = gcn_w4a4_scale16_env && atoi(gcn_w4a4_scale16_env) != 0;
+    const char * gcn_w4a4_scale8_env = getenv("GGML_CUDA_GCN_W4A4_SCALE8");
+    const bool gcn_w4a4_scale8 = gcn_w4a4_scale8_env && atoi(gcn_w4a4_scale8_env) != 0;
     GGML_ASSERT(gcn_w4a4_amax_scale > 0.0f);
+    GGML_ASSERT(!gcn_w4a4_scale16 || !gcn_w4a4_scale8);
     const size_t y_block_size       = use_native_fp4 ? sizeof(block_fp4_mmq) : sizeof(block_q8_1_mmq);
     const size_t y_values_per_block = use_native_fp4 ? QK_FP4_MMQ            : QK8_1_MMQ;
 
@@ -164,7 +167,7 @@ void ggml_cuda_mul_mat_q(
 
             } else if (use_gcn_w4a4) {
                 quantize_mmq_q4_0_cuda(src1_d, nullptr, src1_q8_1.get(), src0->type, ne10, s11, s12, s13, ne10_padded,
-                                       ne11, ne12, ne13, gcn_w4a4_amax_scale, gcn_w4a4_full_range, gcn_w4a4_scale16, stream);
+                                       ne11, ne12, ne13, gcn_w4a4_amax_scale, gcn_w4a4_full_range, gcn_w4a4_scale16, gcn_w4a4_scale8, stream);
             } else {
                 quantize_mmq_q8_1_cuda(src1_d, nullptr, src1_q8_1.get(), src0->type, ne10, s11, s12, s13, ne10_padded,
                                        ne11, ne12, ne13, stream);
@@ -181,7 +184,7 @@ void ggml_cuda_mul_mat_q(
         const mmq_args args = {
             src0_d, src0->type, (const int *) src1_q8_1.ptr, nullptr, nullptr, dst_d,
             src0->type == GGML_TYPE_NVFP4 && use_native_fp4 ? src1_scale.ptr : nullptr,
-            use_gcn_w4a4, gcn_w4a4_scale16,
+            use_gcn_w4a4, gcn_w4a4_scale16, gcn_w4a4_scale8,
             ne00, ne01, ne1, s01, ne11, s1,
             ne02, ne12, s02, s12, s2,
             ne03, ne13, s03, s13, s3,
@@ -269,7 +272,7 @@ void ggml_cuda_mul_mat_q(
     const mmq_args args = {
         src0_d, src0->type, (const int *) src1_q8_1.get(), ids_dst.get(), expert_bounds.get(), dst_d,
         src1_scale.ptr,
-        false, false,
+        false, false, false,
         ne00, ne01, ne_get_rows, s01, ne_get_rows, s1,
         ne02, ne02, s02, s12, s2,
         ne03, ne13, s03, s13, s3,
