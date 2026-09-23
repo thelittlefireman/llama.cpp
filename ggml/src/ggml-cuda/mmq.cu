@@ -155,8 +155,8 @@ void ggml_cuda_mul_mat_q(
     GGML_ASSERT(!gcn_w4a4_scale16 || !gcn_w4a4_scale8);
     GGML_ASSERT(!gcn_w4a4_scale8_fp32 || gcn_w4a4_scale8);
     GGML_ASSERT(!gcn_w4a4_mse_scale || (gcn_w4a4_scale8 && gcn_w4a4_full_range));
-    GGML_ASSERT(!gcn_w4a4_residual || (!gcn_w4a4_scale8 && gcn_w4a4_full_range));
-    GGML_ASSERT(!gcn_w4a4_residual_mse || gcn_w4a4_residual);
+    GGML_ASSERT(!gcn_w4a4_residual || !gcn_w4a4_scale8);
+    GGML_ASSERT(!gcn_w4a4_residual_mse || (gcn_w4a4_residual && gcn_w4a4_full_range));
     const size_t y_block_size       = use_native_fp4 ? sizeof(block_fp4_mmq) : sizeof(block_q8_1_mmq);
     const size_t y_values_per_block = use_native_fp4 ? QK_FP4_MMQ            : QK8_1_MMQ;
 
