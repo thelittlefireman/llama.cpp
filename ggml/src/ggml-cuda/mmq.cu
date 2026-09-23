@@ -149,13 +149,13 @@ void ggml_cuda_mul_mat_q(
     const char * gcn_w4a4_residual_mse_env = getenv("GGML_CUDA_GCN_W4A4_RESIDUAL_MSE");
     const bool gcn_w4a4_residual_mse = gcn_w4a4_residual_mse_env && atoi(gcn_w4a4_residual_mse_env) != 0;
     const char * gcn_w4a4_residual_div_env = getenv("GGML_CUDA_GCN_W4A4_RESIDUAL_DIV");
-    const float gcn_w4a4_residual_div = gcn_w4a4_residual_div_env ? atof(gcn_w4a4_residual_div_env) : 14.0f;
+    const float gcn_w4a4_residual_div = gcn_w4a4_residual_div_env ? atof(gcn_w4a4_residual_div_env) : 16.0f;
     GGML_ASSERT(gcn_w4a4_amax_scale > 0.0f);
     GGML_ASSERT(gcn_w4a4_residual_div > 0.0f);
     GGML_ASSERT(!gcn_w4a4_scale16 || !gcn_w4a4_scale8);
     GGML_ASSERT(!gcn_w4a4_scale8_fp32 || gcn_w4a4_scale8);
     GGML_ASSERT(!gcn_w4a4_mse_scale || (gcn_w4a4_scale8 && gcn_w4a4_full_range));
-    GGML_ASSERT(!gcn_w4a4_residual || (gcn_w4a4_scale16 && !gcn_w4a4_scale8 && gcn_w4a4_full_range));
+    GGML_ASSERT(!gcn_w4a4_residual || (!gcn_w4a4_scale8 && gcn_w4a4_full_range));
     GGML_ASSERT(!gcn_w4a4_residual_mse || gcn_w4a4_residual);
     const size_t y_block_size       = use_native_fp4 ? sizeof(block_fp4_mmq) : sizeof(block_q8_1_mmq);
     const size_t y_values_per_block = use_native_fp4 ? QK_FP4_MMQ            : QK8_1_MMQ;
@@ -287,7 +287,7 @@ void ggml_cuda_mul_mat_q(
     const mmq_args args = {
         src0_d, src0->type, (const int *) src1_q8_1.get(), ids_dst.get(), expert_bounds.get(), dst_d,
         src1_scale.ptr,
-        false, false, false, false, false, 14.0f,
+        false, false, false, false, false, 16.0f,
         ne00, ne01, ne_get_rows, s01, ne_get_rows, s1,
         ne02, ne02, s02, s12, s2,
         ne03, ne13, s03, s13, s3,
