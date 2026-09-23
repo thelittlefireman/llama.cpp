@@ -5258,6 +5258,20 @@ struct test_mul_mat_w4a4_outliers : public test_case {
                     }
                 }
                 ggml_backend_tensor_set(t, data.data(), 0, data.size()*sizeof(float));
+            } else if (strcmp(t->name, "w") == 0) {
+                const size_t nels = ggml_nelements(t);
+                std::vector<float> data(nels);
+                std::mt19937 gen(5678);
+                std::uniform_real_distribution<float> dist(-1.0f, 1.0f);
+                for (size_t i = 0; i < nels; ++i) {
+                    data[i] = dist(gen);
+                }
+
+                const size_t block_size = ggml_blck_size(t->type);
+                const size_t n_blocks = nels / block_size;
+                std::vector<uint8_t> dataq(ggml_row_size(t->type, nels));
+                ggml_quantize_chunk(t->type, data.data(), dataq.data(), 0, n_blocks, block_size, nullptr);
+                ggml_backend_tensor_set(t, dataq.data(), 0, dataq.size());
             } else {
                 init_tensor_uniform(t);
             }
