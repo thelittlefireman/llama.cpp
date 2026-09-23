@@ -495,7 +495,7 @@ static __device__ __forceinline__ float i4_scale_error(const float4 x0, const fl
 static __global__ void quantize_mmq_q4_0(
         const float * __restrict__ x, void * __restrict__ vy,
         const int64_t ne00, const int64_t s01, const int64_t s02, const int64_t s03,
-        const int64_t ne0, const int ne1, const int ne2, const float amax_scale, const bool full_range, const bool scale16, const bool scale8, const bool scale8_fp32, const bool mse_scale) {
+        const int64_t ne0, const int ne1, const int ne2, const float amax_scale, const bool full_range, const bool scale16, const bool scale8, const bool scale8_fp32, const bool mse_scale, const bool residual) {
 
     const int64_t tid = (int64_t) blockDim.x*blockIdx.y + threadIdx.x;
     const int64_t i0 = tid*8;
@@ -560,6 +560,25 @@ static __global__ void quantize_mmq_q4_0(
                             (((uint32_t) q2 & 0x0Fu) << 16) | (((uint32_t) q6 & 0x0Fu) << 20) |
                             (((uint32_t) q3 & 0x0Fu) << 24) | (((uint32_t) q7 & 0x0Fu) << 28);
 
+    uint32_t packed_residual = 0;
+    if (residual) {
+        constexpr float residual_div = 14.0f;
+        const float dr = d / residual_div;
+        const float dr_inv = dr != 0.0f ? 1.0f / dr : 0.0f;
+        const int r0 = max(-8, min(7, (int) roundf((x0.x - d*q0)*dr_inv)));
+        const int r1 = max(-8, min(7, (int) roundf((x0.y - d*q1)*dr_inv)));
+        const int r2 = max(-8, min(7, (int) roundf((x0.z - d*q2)*dr_inv)));
+        const int r3 = max(-8, min(7, (int) roundf((x0.w - d*q3)*dr_inv)));
+        const int r4 = max(-8, min(7, (int) roundf((x1.x - d*q4)*dr_inv)));
+        const int r5 = max(-8, min(7, (int) roundf((x1.y - d*q5)*dr_inv)));
+        const int r6 = max(-8, min(7, (int) roundf((x1.z - d*q6)*dr_inv)));
+        const int r7 = max(-8, min(7, (int) roundf((x1.w - d*q7)*dr_inv)));
+        packed_residual = ((uint32_t) r0 & 0x0Fu) | (((uint32_t) r4 & 0x0Fu) << 4) |
+                          (((uint32_t) r1 & 0x0Fu) << 8) | (((uint32_t) r5 & 0x0Fu) << 12) |
+                          (((uint32_t) r2 & 0x0Fu) << 16) | (((uint32_t) r6 & 0x0Fu) << 20) |
+                          (((uint32_t) r3 & 0x0Fu) << 24) | (((uint32_t) r7 & 0x0Fu) << 28);
+    }
+
     block_q8_1_mmq * y = (block_q8_1_mmq *) vy;
     const int64_t k_block = i0 / QK8_1_MMQ;
     const int group = (i0 % QK8_1_MMQ) / 32;
@@ -567,6 +586,9 @@ static __global__ void quantize_mmq_q4_0(
     const int64_t ib = ib0 + k_block*ne1 + blockIdx.x;
     int * yqs = (int *) y[ib].qs;
     yqs[4*group + lane] = (int) packed;
+    if (residual) {
+        yqs[QK8_1_MMQ/(2*sizeof(int)) + 4*group + lane] = (int) packed_residual;
+    }
 
     if (scale8) {
         if (scale8_fp32) {
@@ -705,7 +727,7 @@ void quantize_row_q8_1_cuda(
 void quantize_mmq_q4_0_cuda(
         const float * x, const int32_t * ids, void * vy, const ggml_type type_src0,
         const int64_t ne00, const int64_t s01, const int64_t s02, const int64_t s03,
-        const int64_t ne0, const int64_t ne1, const int64_t ne2, const int64_t ne3, const float amax_scale, const bool full_range, const bool scale16, const bool scale8, const bool scale8_fp32, const bool mse_scale, cudaStream_t stream) {
+        const int64_t ne0, const int64_t ne1, const int64_t ne2, const int64_t ne3, const float amax_scale, const bool full_range, const bool scale16, const bool scale8, const bool scale8_fp32, const bool mse_scale, const bool residual, cudaStream_t stream) {
     GGML_ASSERT(!ids);
     GGML_ASSERT(type_src0 == GGML_TYPE_Q4_0);
     GGML_ASSERT(ne00 % QK4_0 == 0);
@@ -714,7 +736,7 @@ void quantize_mmq_q4_0_cuda(
     const int64_t block_num_y = (ne0 + 8*CUDA_QUANTIZE_BLOCK_SIZE_MMQ - 1) / (8*CUDA_QUANTIZE_BLOCK_SIZE_MMQ);
     const dim3 num_blocks(ne1, block_num_y, ne2*ne3);
     const dim3 block_size(CUDA_QUANTIZE_BLOCK_SIZE_MMQ, 1, 1);
-    quantize_mmq_q4_0<<<num_blocks, block_size, 0, stream>>>(x, vy, ne00, s01, s02, s03, ne0, ne1, ne2, amax_scale, full_range, scale16, scale8, scale8_fp32, mse_scale);
+    quantize_mmq_q4_0<<<num_blocks, block_size, 0, stream>>>(x, vy, ne00, s01, s02, s03, ne0, ne1, ne2, amax_scale, full_range, scale16, scale8, scale8_fp32, mse_scale, residual);
 }
 
 void quantize_mmq_q8_1_cuda(
