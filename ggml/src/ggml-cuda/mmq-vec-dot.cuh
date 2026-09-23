@@ -9,7 +9,7 @@ using namespace ggml_cuda_mma;
 
 #if defined(GGML_USE_HIP) && defined(__gfx906__)
 template <ggml_type type, int J, bool fallback> static __device__ __forceinline__ void ggml_cuda_mmq_vec_dot_q4_0_q4_0_dp8a(
-        const int * __restrict__ x, const int * __restrict__ y, float * __restrict__ sum, const int k00, const bool scale16, const bool scale8) {
+        const int * __restrict__ x, const int * __restrict__ y, float * __restrict__ sum, const int k00, const bool scale16, const bool scale8, const bool scale8_fp32) {
     constexpr int warp_size = ggml_cuda_get_physical_warp_size();
     constexpr int nwarps    = ggml_cuda_mmq_get_nthreads(type, J, fallback) / warp_size;
     constexpr int I         = ggml_cuda_mmq_get_I(type, J, fallback);
@@ -36,17 +36,33 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
                 const int * vy = &y_qs[j*MMQ_TILE_Y_K + 4*group];
                 const float dx = x_df[i*(MMQ_TILE_NE_K/QI4_0) + i/QI4_0 + k0/(QR4_0*QI4_0)];
                 if (scale8) {
-                    const half2 * y_d8 = (const half2 *) (y_qs + j*MMQ_TILE_Y_K + QK8_1_MMQ/(2*sizeof(int)));
-                    const float2 dy01 = __half22float2(y_d8[2*group + 0]);
-                    const float2 dy23 = __half22float2(y_d8[2*group + 1]);
+                    float dy0;
+                    float dy1;
+                    float dy2;
+                    float dy3;
+                    if (scale8_fp32) {
+                        const float * y_d8 = (const float *) (y_qs + j*MMQ_TILE_Y_K + QK8_1_MMQ/(2*sizeof(int)));
+                        dy0 = y_d8[4*group + 0];
+                        dy1 = y_d8[4*group + 1];
+                        dy2 = y_d8[4*group + 2];
+                        dy3 = y_d8[4*group + 3];
+                    } else {
+                        const half2 * y_d8 = (const half2 *) (y_qs + j*MMQ_TILE_Y_K + QK8_1_MMQ/(2*sizeof(int)));
+                        const float2 dy01 = __half22float2(y_d8[2*group + 0]);
+                        const float2 dy23 = __half22float2(y_d8[2*group + 1]);
+                        dy0 = dy01.x;
+                        dy1 = dy01.y;
+                        dy2 = dy23.x;
+                        dy3 = dy23.y;
+                    }
                     int sumi = ggml_cuda_dp8a(vx[0] ^ 0x88888888, vy[0], 0);
-                    float acc = sumi*dy01.x;
+                    float acc = sumi*dy0;
                     sumi = ggml_cuda_dp8a(vx[1] ^ 0x88888888, vy[1], 0);
-                    acc = fmaf((float) sumi, dy01.y, acc);
+                    acc = fmaf((float) sumi, dy1, acc);
                     sumi = ggml_cuda_dp8a(vx[2] ^ 0x88888888, vy[2], 0);
-                    acc = fmaf((float) sumi, dy23.x, acc);
+                    acc = fmaf((float) sumi, dy2, acc);
                     sumi = ggml_cuda_dp8a(vx[3] ^ 0x88888888, vy[3], 0);
-                    acc = fmaf((float) sumi, dy23.y, acc);
+                    acc = fmaf((float) sumi, dy3, acc);
                     sum[j0/nwarps*I/warp_size + i0/warp_size] += dx*acc;
                 } else if (scale16) {
                     int sumi0 = 0;
