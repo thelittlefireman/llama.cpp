@@ -527,9 +527,11 @@ static __global__ void quantize_mmq_q4_0(
     if (scale8) {
         half * y_d8 = (half *) (y[ib].qs + QK8_1_MMQ/2);
         y_d8[4*group + lane] = __float2half(d);
-    } else if (lane == 0) {
+    } else {
         const float d1 = scale16 ? __shfl_xor_sync(0xFFFFFFFF, d, 2, WARP_SIZE) : 0.0f;
-        y[ib].ds4[group] = make_half2(d, d1);
+        if (lane == 0) {
+            y[ib].ds4[group] = make_half2(d, d1);
+        }
     }
 }
 
