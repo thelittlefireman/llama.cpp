@@ -457,7 +457,7 @@ static __global__ void quantize_mmq_mxfp4(const float * __restrict__ x,
 static __global__ void quantize_mmq_q4_0(
         const float * __restrict__ x, void * __restrict__ vy,
         const int64_t ne00, const int64_t s01, const int64_t s02, const int64_t s03,
-        const int64_t ne0, const int ne1, const int ne2) {
+        const int64_t ne0, const int ne1, const int ne2, const float amax_scale) {
 
     const int64_t tid = (int64_t) blockDim.x*blockIdx.y + threadIdx.x;
     const int64_t i0 = tid*8;
@@ -491,6 +491,7 @@ static __global__ void quantize_mmq_q4_0(
     amax = fmaxf(amax, __shfl_xor_sync(0xFFFFFFFF, amax, 1, WARP_SIZE));
     amax = fmaxf(amax, __shfl_xor_sync(0xFFFFFFFF, amax, 2, WARP_SIZE));
 
+    amax *= amax_scale;
     const float d_inv = amax > 0.0f ? 7.0f / amax : 0.0f;
     const float d = amax / 7.0f;
     const int q0 = max(-7, min(7, (int) roundf(x0.x*d_inv)));
@@ -641,7 +642,7 @@ void quantize_row_q8_1_cuda(
 void quantize_mmq_q4_0_cuda(
         const float * x, const int32_t * ids, void * vy, const ggml_type type_src0,
         const int64_t ne00, const int64_t s01, const int64_t s02, const int64_t s03,
-        const int64_t ne0, const int64_t ne1, const int64_t ne2, const int64_t ne3, cudaStream_t stream) {
+        const int64_t ne0, const int64_t ne1, const int64_t ne2, const int64_t ne3, const float amax_scale, cudaStream_t stream) {
     GGML_ASSERT(!ids);
     GGML_ASSERT(type_src0 == GGML_TYPE_Q4_0);
     GGML_ASSERT(ne00 % QK4_0 == 0);
@@ -650,7 +651,7 @@ void quantize_mmq_q4_0_cuda(
     const int64_t block_num_y = (ne0 + 8*CUDA_QUANTIZE_BLOCK_SIZE_MMQ - 1) / (8*CUDA_QUANTIZE_BLOCK_SIZE_MMQ);
     const dim3 num_blocks(ne1, block_num_y, ne2*ne3);
     const dim3 block_size(CUDA_QUANTIZE_BLOCK_SIZE_MMQ, 1, 1);
-    quantize_mmq_q4_0<<<num_blocks, block_size, 0, stream>>>(x, vy, ne00, s01, s02, s03, ne0, ne1, ne2);
+    quantize_mmq_q4_0<<<num_blocks, block_size, 0, stream>>>(x, vy, ne00, s01, s02, s03, ne0, ne1, ne2, amax_scale);
 }
 
 void quantize_mmq_q8_1_cuda(

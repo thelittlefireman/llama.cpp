@@ -132,6 +132,9 @@ void ggml_cuda_mul_mat_q(
     const char * gcn_w4a4_env = getenv("GGML_CUDA_GCN_W4A4");
     const bool use_gcn_w4a4 = !ids && src0->type == GGML_TYPE_Q4_0 && cc == GGML_CUDA_CC_VEGA20 &&
         gcn_w4a4_env && atoi(gcn_w4a4_env) != 0;
+    const char * gcn_w4a4_amax_scale_env = getenv("GGML_CUDA_GCN_W4A4_AMAX_SCALE");
+    const float gcn_w4a4_amax_scale = gcn_w4a4_amax_scale_env ? atof(gcn_w4a4_amax_scale_env) : 1.0f;
+    GGML_ASSERT(gcn_w4a4_amax_scale > 0.0f);
     const size_t y_block_size       = use_native_fp4 ? sizeof(block_fp4_mmq) : sizeof(block_q8_1_mmq);
     const size_t y_values_per_block = use_native_fp4 ? QK_FP4_MMQ            : QK8_1_MMQ;
 
@@ -157,7 +160,7 @@ void ggml_cuda_mul_mat_q(
 
             } else if (use_gcn_w4a4) {
                 quantize_mmq_q4_0_cuda(src1_d, nullptr, src1_q8_1.get(), src0->type, ne10, s11, s12, s13, ne10_padded,
-                                       ne11, ne12, ne13, stream);
+                                       ne11, ne12, ne13, gcn_w4a4_amax_scale, stream);
             } else {
                 quantize_mmq_q8_1_cuda(src1_d, nullptr, src1_q8_1.get(), src0->type, ne10, s11, s12, s13, ne10_padded,
                                        ne11, ne12, ne13, stream);
