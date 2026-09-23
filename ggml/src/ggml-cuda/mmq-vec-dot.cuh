@@ -54,7 +54,7 @@ static __device__ __forceinline__ void ggml_cuda_mmq_vec_dot_q4_0_q4_0_dp8a(
 
                     int sumr = 0;
 #pragma unroll
-                    for (int l = 0; l < VDR_Q4_0_Q8_1_MMQ; l += 2) {
+                    for (int l = 0; l < VDR_Q4_0_Q8_1_MMQ; ++l) {
                         sumr = ggml_cuda_dp8a(vx[l] ^ 0x88888888, vyr4[l], sumr);
                     }
                     sum[j0/nwarps*I/warp_size + i0/warp_size] += dx*dy*(sumi + sumr*(1.0f/16.0f));
