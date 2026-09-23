@@ -495,7 +495,7 @@ static __device__ __forceinline__ float i4_scale_error(const float4 x0, const fl
 static __global__ void quantize_mmq_q4_0(
         const float * __restrict__ x, void * __restrict__ vy,
         const int64_t ne00, const int64_t s01, const int64_t s02, const int64_t s03,
-        const int64_t ne0, const int ne1, const int ne2, const float amax_scale, const bool full_range, const bool scale16, const bool scale8, const bool scale8_fp32, const bool mse_scale, const bool residual, const bool residual_mse, const float residual_div) {
+        const int64_t ne0, const int ne1, const int ne2, const float amax_scale, const bool full_range, const bool scale16, const bool scale8, const bool scale8_fp32, const bool mse_scale, const bool residual) {
 
     const int64_t tid = (int64_t) blockDim.x*blockIdx.y + threadIdx.x;
     const int64_t i0 = tid*8;
@@ -531,8 +531,9 @@ static __global__ void quantize_mmq_q4_0(
 
     float d;
     if (full_range) {
-        float d_pos = fmaxf(vmax / 7.0f, -vmin / 8.0f) * amax_scale;
-        float d_neg = -fmaxf(vmax / 8.0f, -vmin / 7.0f) * amax_scale;
+        const float scale = residual ? 1.0f : amax_scale;
+        float d_pos = fmaxf(vmax / 7.0f, -vmin / 8.0f) * scale;
+        float d_neg = -fmaxf(vmax / 8.0f, -vmin / 7.0f) * scale;
         if (mse_scale) {
             d_pos = optimize_i4_scale(x0, x1, d_pos);
             d_neg = optimize_i4_scale(x0, x1, d_neg);
@@ -542,49 +543,6 @@ static __global__ void quantize_mmq_q4_0(
         }
     } else {
         d = fmaxf(fabsf(vmax), fabsf(vmin)) * amax_scale / 7.0f;
-    }
-
-    if (residual_mse) {
-#pragma unroll
-        for (int iter = 0; iter < 2; ++iter) {
-            const float d_inv_iter = d != 0.0f ? 1.0f / d : 0.0f;
-            const float dr_inv = d != 0.0f ? residual_div / d : 0.0f;
-
-            const int q0i = quantize_i4(x0.x, d_inv_iter);
-            const int q1i = quantize_i4(x0.y, d_inv_iter);
-            const int q2i = quantize_i4(x0.z, d_inv_iter);
-            const int q3i = quantize_i4(x0.w, d_inv_iter);
-            const int q4i = quantize_i4(x1.x, d_inv_iter);
-            const int q5i = quantize_i4(x1.y, d_inv_iter);
-            const int q6i = quantize_i4(x1.z, d_inv_iter);
-            const int q7i = quantize_i4(x1.w, d_inv_iter);
-
-            const int r0i = quantize_i4(x0.x - d*q0i, dr_inv);
-            const int r1i = quantize_i4(x0.y - d*q1i, dr_inv);
-            const int r2i = quantize_i4(x0.z - d*q2i, dr_inv);
-            const int r3i = quantize_i4(x0.w - d*q3i, dr_inv);
-            const int r4i = quantize_i4(x1.x - d*q4i, dr_inv);
-            const int r5i = quantize_i4(x1.y - d*q5i, dr_inv);
-            const int r6i = quantize_i4(x1.z - d*q6i, dr_inv);
-            const int r7i = quantize_i4(x1.w - d*q7i, dr_inv);
-
-            const float z0 = q0i + r0i/residual_div;
-            const float z1 = q1i + r1i/residual_div;
-            const float z2 = q2i + r2i/residual_div;
-            const float z3 = q3i + r3i/residual_div;
-            const float z4 = q4i + r4i/residual_div;
-            const float z5 = q5i + r5i/residual_div;
-            const float z6 = q6i + r6i/residual_div;
-            const float z7 = q7i + r7i/residual_div;
-
-            float num = x0.x*z0 + x0.y*z1 + x0.z*z2 + x0.w*z3 + x1.x*z4 + x1.y*z5 + x1.z*z6 + x1.w*z7;
-            float den = z0*z0 + z1*z1 + z2*z2 + z3*z3 + z4*z4 + z5*z5 + z6*z6 + z7*z7;
-            num += __shfl_xor_sync(0xFFFFFFFF, num, 1, WARP_SIZE);
-            den += __shfl_xor_sync(0xFFFFFFFF, den, 1, WARP_SIZE);
-            if (den > 0.0f) {
-                d = num / den;
-            }
-        }
     }
 
     const float d_inv = d != 0.0f ? 1.0f / d : 0.0f;
@@ -605,6 +563,7 @@ static __global__ void quantize_mmq_q4_0(
 
     uint32_t packed_residual = 0;
     if (residual) {
+        constexpr float residual_div = 16.0f;
         const float dr = d / residual_div;
         const float dr_inv = dr != 0.0f ? 1.0f / dr : 0.0f;
         const int r0 = max(-8, min(7, (int) roundf((x0.x - d*q0)*dr_inv)));
@@ -769,7 +728,7 @@ void quantize_row_q8_1_cuda(
 void quantize_mmq_q4_0_cuda(
         const float * x, const int32_t * ids, void * vy, const ggml_type type_src0,
         const int64_t ne00, const int64_t s01, const int64_t s02, const int64_t s03,
-        const int64_t ne0, const int64_t ne1, const int64_t ne2, const int64_t ne3, const float amax_scale, const bool full_range, const bool scale16, const bool scale8, const bool scale8_fp32, const bool mse_scale, const bool residual, const bool residual_mse, const float residual_div, cudaStream_t stream) {
+        const int64_t ne0, const int64_t ne1, const int64_t ne2, const int64_t ne3, const float amax_scale, const bool full_range, const bool scale16, const bool scale8, const bool scale8_fp32, const bool mse_scale, const bool residual, cudaStream_t stream) {
     GGML_ASSERT(!ids);
     GGML_ASSERT(type_src0 == GGML_TYPE_Q4_0);
     GGML_ASSERT(ne00 % QK4_0 == 0);
@@ -778,7 +737,7 @@ void quantize_mmq_q4_0_cuda(
     const int64_t block_num_y = (ne0 + 8*CUDA_QUANTIZE_BLOCK_SIZE_MMQ - 1) / (8*CUDA_QUANTIZE_BLOCK_SIZE_MMQ);
     const dim3 num_blocks(ne1, block_num_y, ne2*ne3);
     const dim3 block_size(CUDA_QUANTIZE_BLOCK_SIZE_MMQ, 1, 1);
-    quantize_mmq_q4_0<<<num_blocks, block_size, 0, stream>>>(x, vy, ne00, s01, s02, s03, ne0, ne1, ne2, amax_scale, full_range, scale16, scale8, scale8_fp32, mse_scale, residual, residual_mse, residual_div);
+    quantize_mmq_q4_0<<<num_blocks, block_size, 0, stream>>>(x, vy, ne00, s01, s02, s03, ne0, ne1, ne2, amax_scale, full_range, scale16, scale8, scale8_fp32, mse_scale, residual);
 }
 
 void quantize_mmq_q8_1_cuda(
