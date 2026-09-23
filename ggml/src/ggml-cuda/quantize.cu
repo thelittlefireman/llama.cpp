@@ -480,51 +480,39 @@ static __global__ void quantize_mmq_q4_0(
         x1 = x4[(base_idx + group_base + 16 + 4*lane) / 4];
     }
 
-    float max0 = fmaxf(fmaxf(x0.x, x0.y), fmaxf(x0.z, x0.w));
-    float min0 = fminf(fminf(x0.x, x0.y), fminf(x0.z, x0.w));
-    float max1 = fmaxf(fmaxf(x1.x, x1.y), fmaxf(x1.z, x1.w));
-    float min1 = fminf(fminf(x1.x, x1.y), fminf(x1.z, x1.w));
-    max0 = fmaxf(max0, __shfl_xor_sync(0xFFFFFFFF, max0, 1, WARP_SIZE));
-    max0 = fmaxf(max0, __shfl_xor_sync(0xFFFFFFFF, max0, 2, WARP_SIZE));
-    min0 = fminf(min0, __shfl_xor_sync(0xFFFFFFFF, min0, 1, WARP_SIZE));
-    min0 = fminf(min0, __shfl_xor_sync(0xFFFFFFFF, min0, 2, WARP_SIZE));
-    max1 = fmaxf(max1, __shfl_xor_sync(0xFFFFFFFF, max1, 1, WARP_SIZE));
-    max1 = fmaxf(max1, __shfl_xor_sync(0xFFFFFFFF, max1, 2, WARP_SIZE));
-    min1 = fminf(min1, __shfl_xor_sync(0xFFFFFFFF, min1, 1, WARP_SIZE));
-    min1 = fminf(min1, __shfl_xor_sync(0xFFFFFFFF, min1, 2, WARP_SIZE));
-
+    float vmax = fmaxf(fmaxf(fmaxf(x0.x, x0.y), fmaxf(x0.z, x0.w)), fmaxf(fmaxf(x1.x, x1.y), fmaxf(x1.z, x1.w)));
+    float vmin = fminf(fminf(fminf(x0.x, x0.y), fminf(x0.z, x0.w)), fminf(fminf(x1.x, x1.y), fminf(x1.z, x1.w)));
+    vmax = fmaxf(vmax, __shfl_xor_sync(0xFFFFFFFF, vmax, 1, WARP_SIZE));
+    vmin = fminf(vmin, __shfl_xor_sync(0xFFFFFFFF, vmin, 1, WARP_SIZE));
     if (!scale16) {
-        max0 = fmaxf(max0, max1);
-        min0 = fminf(min0, min1);
-        max1 = max0;
-        min1 = min0;
+        vmax = fmaxf(vmax, __shfl_xor_sync(0xFFFFFFFF, vmax, 2, WARP_SIZE));
+        vmin = fminf(vmin, __shfl_xor_sync(0xFFFFFFFF, vmin, 2, WARP_SIZE));
     }
 
-    float d0;
-    float d1;
+    float d;
     if (full_range) {
-        const float d0_pos = fmaxf(max0 / 7.0f, -min0 / 8.0f);
-        const float d0_neg = fmaxf(max0 / 8.0f, -min0 / 7.0f);
-        const float d1_pos = fmaxf(max1 / 7.0f, -min1 / 8.0f);
-        const float d1_neg = fmaxf(max1 / 8.0f, -min1 / 7.0f);
-        d0 = (d0_pos <= d0_neg ? d0_pos : -d0_neg) * amax_scale;
-        d1 = (d1_pos <= d1_neg ? d1_pos : -d1_neg) * amax_scale;
+        const float d_pos = fmaxf(vmax / 7.0f, -vmin / 8.0f);
+        const float d_neg = fmaxf(vmax / 8.0f, -vmin / 7.0f);
+        d = (d_pos <= d_neg ? d_pos : -d_neg) * amax_scale;
     } else {
-        d0 = fmaxf(fabsf(max0), fabsf(min0)) * amax_scale / 7.0f;
-        d1 = fmaxf(fabsf(max1), fabsf(min1)) * amax_scale / 7.0f;
+        d = fmaxf(fabsf(vmax), fabsf(vmin)) * amax_scale / 7.0f;
     }
 
-    const float d0_inv = d0 != 0.0f ? 1.0f / d0 : 0.0f;
-    const float d1_inv = d1 != 0.0f ? 1.0f / d1 : 0.0f;
+    const float d_inv = d != 0.0f ? 1.0f / d : 0.0f;
     const int qmin = full_range ? -8 : -7;
-    const int q0 = max(qmin, min(7, (int) roundf(x0.x*d0_inv)));
-    const int q1 = max(qmin, min(7, (int) roundf(x0.y*d0_inv)));
-    const int q2 = max(qmin, min(7, (int) roundf(x0.z*d0_inv)));
-    const int q3 = max(qmin, min(7, (int) roundf(x0.w*d0_inv)));
-    const int q4 = max(qmin, min(7, (int) roundf(x1.x*d1_inv)));
-    const int q5 = max(qmin, min(7, (int) roundf(x1.y*d1_inv)));
-    const int q6 = max(qmin, min(7, (int) roundf(x1.z*d1_inv)));
-    const int q7 = max(qmin, min(7, (int) roundf(x1.w*d1_inv)));
+    const int q0 = max(qmin, min(7, (int) roundf(x0.x*d_inv)));
+    const int q1 = max(qmin, min(7, (int) roundf(x0.y*d_inv)));
+    const int q2 = max(qmin, min(7, (int) roundf(x0.z*d_inv)));
+    const int q3 = max(qmin, min(7, (int) roundf(x0.w*d_inv)));
+    const int q4 = max(qmin, min(7, (int) roundf(x1.x*d_inv)));
+    const int q5 = max(qmin, min(7, (int) roundf(x1.y*d_inv)));
+    const int q6 = max(qmin, min(7, (int) roundf(x1.z*d_inv)));
+    const int q7 = max(qmin, min(7, (int) roundf(x1.w*d_inv)));
+
+    const uint32_t packed = ((uint32_t) q0 & 0x0Fu) | (((uint32_t) q4 & 0x0Fu) << 4) |
+                            (((uint32_t) q1 & 0x0Fu) << 8) | (((uint32_t) q5 & 0x0Fu) << 12) |
+                            (((uint32_t) q2 & 0x0Fu) << 16) | (((uint32_t) q6 & 0x0Fu) << 20) |
+                            (((uint32_t) q3 & 0x0Fu) << 24) | (((uint32_t) q7 & 0x0Fu) << 28);
 
     block_q8_1_mmq * y = (block_q8_1_mmq *) vy;
     const int64_t k_block = i0 / QK8_1_MMQ;
@@ -532,29 +520,11 @@ static __global__ void quantize_mmq_q4_0(
     const int64_t ib0 = blockIdx.z*((int64_t) ne1*(ne0/QK8_1_MMQ));
     const int64_t ib = ib0 + k_block*ne1 + blockIdx.x;
     int * yqs = (int *) y[ib].qs;
+    yqs[4*group + lane] = (int) packed;
 
-    if (scale16) {
-        const uint32_t packed0 = ((uint32_t) q0 & 0x0Fu) | (((uint32_t) q1 & 0x0Fu) << 4) |
-                                 (((uint32_t) q2 & 0x0Fu) << 8) | (((uint32_t) q3 & 0x0Fu) << 12);
-        const uint32_t packed1 = ((uint32_t) q4 & 0x0Fu) | (((uint32_t) q5 & 0x0Fu) << 4) |
-                                 (((uint32_t) q6 & 0x0Fu) << 8) | (((uint32_t) q7 & 0x0Fu) << 12);
-        const uint32_t peer0 = __shfl_xor_sync(0xFFFFFFFF, packed0, 1, WARP_SIZE);
-        const uint32_t peer1 = __shfl_xor_sync(0xFFFFFFFF, packed1, 1, WARP_SIZE);
-        if ((lane & 1) == 0) {
-            const int pair = lane >> 1;
-            yqs[4*group + pair] = packed0 | (peer0 << 16);
-            yqs[4*group + 2 + pair] = packed1 | (peer1 << 16);
-        }
-    } else {
-        const uint32_t packed = ((uint32_t) q0 & 0x0Fu) | (((uint32_t) q4 & 0x0Fu) << 4) |
-                                (((uint32_t) q1 & 0x0Fu) << 8) | (((uint32_t) q5 & 0x0Fu) << 12) |
-                                (((uint32_t) q2 & 0x0Fu) << 16) | (((uint32_t) q6 & 0x0Fu) << 20) |
-                                (((uint32_t) q3 & 0x0Fu) << 24) | (((uint32_t) q7 & 0x0Fu) << 28);
-        yqs[4*group + lane] = (int) packed;
-    }
-
+    const float d1 = scale16 ? __shfl_xor_sync(0xFFFFFFFF, d, 2, WARP_SIZE) : 0.0f;
     if (lane == 0) {
-        y[ib].ds4[group] = make_half2(d0, scale16 ? d1 : 0.0f);
+        y[ib].ds4[group] = make_half2(d, d1);
     }
 }
 
