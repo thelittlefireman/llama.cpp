@@ -5185,13 +5185,16 @@ struct test_mul_mat_w4a4_outliers : public test_case {
     const int64_t m;
     const int64_t n;
     const int64_t k;
+    const float outlier_scale;
 
     std::string vars() override {
-        return VARS_TO_STR5(hadamard, randomized, m, n, k);
+        return VARS_TO_STR6(hadamard, randomized, m, n, k, outlier_scale);
     }
 
-    test_mul_mat_w4a4_outliers(bool hadamard, int64_t m = 576, int64_t n = 32, int64_t k = 1024, bool randomized = false)
-        : hadamard(hadamard), randomized(randomized), m(m), n(n), k(k) {
+    test_mul_mat_w4a4_outliers(
+            bool hadamard, int64_t m = 576, int64_t n = 32, int64_t k = 1024,
+            bool randomized = false, float outlier_scale = 16.0f)
+        : hadamard(hadamard), randomized(randomized), m(m), n(n), k(k), outlier_scale(outlier_scale) {
         GGML_ASSERT(k == 1024);
         GGML_ASSERT(!randomized || hadamard);
     }
@@ -5255,7 +5258,7 @@ struct test_mul_mat_w4a4_outliers : public test_case {
                     for (int64_t i = 0; i < k; ++i) {
                         float v = dist(gen);
                         if ((i & 127) == 0) {
-                            v *= 16.0f;
+                            v *= outlier_scale;
                         }
                         data[r*k + i] = v;
                     }
@@ -10104,9 +10107,11 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_mul_mat_hadamard(GGML_TYPE_F32, GGML_TYPE_F16, 128, 4, 128, {2, 3}));
     test_cases.emplace_back(new test_mul_mat_hadamard(GGML_TYPE_F32, GGML_TYPE_F16, 256, 512, 256)); // many rows
     test_cases.emplace_back(new test_mul_mat_w4a4_hadamard(576, 32, 1024));
-    test_cases.emplace_back(new test_mul_mat_w4a4_outliers(false, 576, 32, 1024));
-    test_cases.emplace_back(new test_mul_mat_w4a4_outliers(true,  576, 32, 1024));
-    test_cases.emplace_back(new test_mul_mat_w4a4_outliers(true,  576, 32, 1024, true));
+    for (float outlier_scale : {1.0f, 4.0f, 16.0f, 64.0f}) {
+        test_cases.emplace_back(new test_mul_mat_w4a4_outliers(false, 576, 32, 1024, false, outlier_scale));
+        test_cases.emplace_back(new test_mul_mat_w4a4_outliers(true,  576, 32, 1024, false, outlier_scale));
+        test_cases.emplace_back(new test_mul_mat_w4a4_outliers(true,  576, 32, 1024, true,  outlier_scale));
+    }
 
 #if 0
     // > 4GB A matrix. Too slow to be enabled by default.
