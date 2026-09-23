@@ -39,10 +39,10 @@ template <ggml_type type, int J, bool fallback> static __device__ __forceinline_
                     int sumi0 = 0;
                     int sumi1 = 0;
 #pragma unroll
-                    for (int l = 0; l < VDR_Q4_0_Q8_1_MMQ; ++l) {
-                        const int wx = vx[l] ^ 0x88888888;
-                        sumi0 = ggml_cuda_dp8a(wx & 0x0F0F0F0F, vy[l] & 0x0F0F0F0F, sumi0);
-                        sumi1 = ggml_cuda_dp8a(wx & 0xF0F0F0F0, vy[l] & 0xF0F0F0F0, sumi1);
+                    for (int l = 0; l < VDR_Q4_0_Q8_1_MMQ/2; ++l) {
+                        sumi0 = ggml_cuda_dp8a(vx[l] ^ 0x88888888, vy[l], sumi0);
+                        sumi1 = ggml_cuda_dp8a(vx[l + VDR_Q4_0_Q8_1_MMQ/2] ^ 0x88888888,
+                                               vy[l + VDR_Q4_0_Q8_1_MMQ/2], sumi1);
                     }
                     const float2 dy = __half22float2(y_ds[j*MMQ_TILE_Y_K + group]);
                     sum[j0/nwarps*I/warp_size + i0/warp_size] += dx*(sumi0*dy.x + sumi1*dy.y);

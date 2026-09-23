@@ -526,18 +526,32 @@ static __global__ void quantize_mmq_q4_0(
     const int q6 = max(qmin, min(7, (int) roundf(x1.z*d1_inv)));
     const int q7 = max(qmin, min(7, (int) roundf(x1.w*d1_inv)));
 
-    const uint32_t packed = ((uint32_t) q0 & 0x0Fu) | (((uint32_t) q4 & 0x0Fu) << 4) |
-                            (((uint32_t) q1 & 0x0Fu) << 8) | (((uint32_t) q5 & 0x0Fu) << 12) |
-                            (((uint32_t) q2 & 0x0Fu) << 16) | (((uint32_t) q6 & 0x0Fu) << 20) |
-                            (((uint32_t) q3 & 0x0Fu) << 24) | (((uint32_t) q7 & 0x0Fu) << 28);
-
     block_q8_1_mmq * y = (block_q8_1_mmq *) vy;
     const int64_t k_block = i0 / QK8_1_MMQ;
     const int group = (i0 % QK8_1_MMQ) / 32;
     const int64_t ib0 = blockIdx.z*((int64_t) ne1*(ne0/QK8_1_MMQ));
     const int64_t ib = ib0 + k_block*ne1 + blockIdx.x;
     int * yqs = (int *) y[ib].qs;
-    yqs[4*group + lane] = (int) packed;
+
+    if (scale16) {
+        const uint32_t packed0 = ((uint32_t) q0 & 0x0Fu) | (((uint32_t) q1 & 0x0Fu) << 4) |
+                                 (((uint32_t) q2 & 0x0Fu) << 8) | (((uint32_t) q3 & 0x0Fu) << 12);
+        const uint32_t packed1 = ((uint32_t) q4 & 0x0Fu) | (((uint32_t) q5 & 0x0Fu) << 4) |
+                                 (((uint32_t) q6 & 0x0Fu) << 8) | (((uint32_t) q7 & 0x0Fu) << 12);
+        const uint32_t peer0 = __shfl_xor_sync(0xFFFFFFFF, packed0, 1, WARP_SIZE);
+        const uint32_t peer1 = __shfl_xor_sync(0xFFFFFFFF, packed1, 1, WARP_SIZE);
+        if ((lane & 1) == 0) {
+            const int pair = lane >> 1;
+            yqs[4*group + pair] = packed0 | (peer0 << 16);
+            yqs[4*group + 2 + pair] = packed1 | (peer1 << 16);
+        }
+    } else {
+        const uint32_t packed = ((uint32_t) q0 & 0x0Fu) | (((uint32_t) q4 & 0x0Fu) << 4) |
+                                (((uint32_t) q1 & 0x0Fu) << 8) | (((uint32_t) q5 & 0x0Fu) << 12) |
+                                (((uint32_t) q2 & 0x0Fu) << 16) | (((uint32_t) q6 & 0x0Fu) << 20) |
+                                (((uint32_t) q3 & 0x0Fu) << 24) | (((uint32_t) q7 & 0x0Fu) << 28);
+        yqs[4*group + lane] = (int) packed;
+    }
 
     if (lane == 0) {
         y[ib].ds4[group] = make_half2(d0, scale16 ? d1 : 0.0f);

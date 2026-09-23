@@ -923,7 +923,19 @@ static __device__ __forceinline__ void mul_mat_q_process_tile(
     constexpr int sz = sizeof(block_q8_1_mmq) / sizeof(int);
 
     for (int kb0 = kb0_start; kb0 < kb0_stop; kb0 += blocks_per_iter) {
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+        if constexpr (type == GGML_TYPE_Q4_0) {
+            if (use_w4a4 && use_w4a4_scale16) {
+                ggml_cuda_mmq_load_tiles_q4_0_w4a4_scale16<type, J, fallback>(x, tile_x, offset_x + kb0, tile_x_max_i, stride_row_x);
+            } else {
+                load_tiles(x, tile_x, offset_x + kb0, tile_x_max_i, stride_row_x);
+            }
+        } else {
+            load_tiles(x, tile_x, offset_x + kb0, tile_x_max_i, stride_row_x);
+        }
+#else
         load_tiles(x, tile_x, offset_x + kb0, tile_x_max_i, stride_row_x);
+#endif // defined(GGML_USE_HIP) && defined(__gfx906__)
         {
             const int * by0 = y + ncols_y * (kb0 * qk / ne_block) * sz;
 #pragma unroll
