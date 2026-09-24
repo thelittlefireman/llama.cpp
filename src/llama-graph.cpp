@@ -330,11 +330,15 @@ void llm_graph_input_rs::set_input(const llama_ubatch * ubatch) {
 
     if (s_copy) {
         GGML_ASSERT(ggml_backend_buffer_is_host(s_copy->buffer));
-        int32_t * data = (int32_t *) s_copy->data;
+        GGML_ASSERT(ggml_backend_buffer_is_host(s_copy_base->buffer));
+        int32_t * data      = (int32_t *) s_copy->data;
+        int32_t * data_base = (int32_t *) s_copy_base->data;
+        const uint32_t size = mctx->get_size();
 
         // assuming copy destinations ALWAYS happen ONLY on the cells between head and head+n
         for (uint32_t i = 0; i < n_rs; ++i) {
-            data[i] = mctx->s_copy(i);
+            data[i]      = mctx->s_copy(i);
+            data_base[i] = data[i] % (int32_t) size;
         }
     }
 }
@@ -347,6 +351,7 @@ bool llm_graph_input_rs::can_reuse(const llm_graph_params & params) {
     bool res = true;
 
     res &= s_copy->ne[0] == mctx->get_n_rs();
+    res &= s_copy_base->ne[0] == mctx->get_n_rs();
 
     res &= s_copy_main->ne[0]  == params.ubatch.n_seqs;
     res &= s_copy_extra->ne[0] == mctx->get_n_rs() - params.ubatch.n_seqs;
@@ -3323,11 +3328,14 @@ static std::unique_ptr<llm_graph_input_rs> build_rs_inp_impl(
     const int64_t n_rs   = mctx_cur->get_n_rs();
     const int64_t n_seqs = ubatch.n_seqs;
 
-    inp->s_copy = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_rs);
+    inp->s_copy      = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_rs);
+    inp->s_copy_base = ggml_new_tensor_1d(ctx0, GGML_TYPE_I32, n_rs);
     ggml_set_input(inp->s_copy);
+    ggml_set_input(inp->s_copy_base);
 
-    inp->s_copy_main  = ggml_view_1d(ctx0, inp->s_copy, n_seqs, 0);
-    inp->s_copy_extra = ggml_view_1d(ctx0, inp->s_copy, n_rs - n_seqs, n_seqs * inp->s_copy->nb[0]);
+    inp->s_copy_main      = ggml_view_1d(ctx0, inp->s_copy, n_seqs, 0);
+    inp->s_copy_extra     = ggml_view_1d(ctx0, inp->s_copy, n_rs - n_seqs, n_seqs * inp->s_copy->nb[0]);
+    inp->s_copy_base_main = ggml_view_1d(ctx0, inp->s_copy_base, n_seqs, 0);
 
     inp->head = mctx_cur->get_head();
     inp->rs_z = mctx_cur->get_rs_z();

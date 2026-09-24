@@ -264,12 +264,14 @@ public:
 
     bool can_reuse(const llm_graph_params & params) override;
 
-    ggml_tensor * s_copy;  // I32 [n_rs]
+    ggml_tensor * s_copy;       // I32 [n_rs]
+    ggml_tensor * s_copy_base;  // I32 [n_rs], rollback group stripped
 
     // views of s_copy, computed once per graph
     // and shared across layers which use build_rs
     ggml_tensor * s_copy_main;   // I32 [n_seqs]
     ggml_tensor * s_copy_extra;  // I32 [n_rs - n_seqs]
+    ggml_tensor * s_copy_base_main; // I32 [n_seqs]
 
     const llama_memory_recurrent_context * mctx;
 
