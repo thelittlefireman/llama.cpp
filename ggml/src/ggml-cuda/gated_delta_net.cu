@@ -169,6 +169,241 @@ gated_delta_net_cuda(const float * q,
     }
 }
 
+
+template <int S_v>
+__global__ void __launch_bounds__((ggml_cuda_get_physical_warp_size() < S_v ? ggml_cuda_get_physical_warp_size() : S_v) * 4, 2)
+gated_delta_net_replay_cuda(const float * q,
+                            const float * k,
+                            const float * v,
+                            const float * g,
+                            const float * beta,
+                            const float * checkpoint,
+                            const float * replay,
+                            const int32_t * state_copy,
+                            float * replay_all,
+                            float * dst,
+                            float * checkpoint_out,
+                            int64_t H,
+                            int64_t n_tokens,
+                            int64_t n_seqs,
+                            int64_t sq1,
+                            int64_t sq2,
+                            int64_t sq3,
+                            int64_t sv1,
+                            int64_t sv2,
+                            int64_t sv3,
+                            int64_t sb1,
+                            int64_t sb2,
+                            int64_t sb3,
+                            const uint3 neqk1_magic,
+                            const uint3 rq3_magic,
+                            float scale,
+                            int replay_buffer_size,
+                            int mem_size,
+                            int state_head,
+                            int64_t replay_seq_stride,
+                            int64_t replay_all_seq_stride,
+                            int K) {
+    const uint32_t h_idx    = blockIdx.x;
+    const uint32_t sequence = blockIdx.y;
+    const int lane = threadIdx.x;
+    const int col  = blockIdx.z * blockDim.y + threadIdx.y;
+
+    constexpr int warp_size = ggml_cuda_get_physical_warp_size() < S_v ? ggml_cuda_get_physical_warp_size() : S_v;
+    constexpr int rows_per_lane = S_v / warp_size;
+
+    const int physical_size = 2 * replay_buffer_size;
+    const int physical_mask = physical_size - 1;
+    const int record_stride = 2 * S_v + 1;
+    const int head_stride   = 2 + physical_size * record_stride;
+
+    const int encoded_state = state_copy[sequence];
+    const int rollback      = encoded_state / mem_size;
+    const int src_cell      = encoded_state % mem_size;
+    const int dst_cell      = state_head + sequence;
+    const bool moved        = src_cell != dst_cell;
+
+    const float * replay_src = replay + sequence * replay_seq_stride + h_idx * head_stride;
+    float * replay_dst       = replay_all + dst_cell * replay_all_seq_stride + h_idx * head_stride;
+
+    int base  = (int) replay_src[0] & physical_mask;
+    int count = (int) replay_src[1];
+    count = rollback < count ? count - rollback : 0;
+
+    const int rollback_window = K > 1 ? K - 1 : 0;
+    const int total_count     = count + (int) n_tokens;
+    int n_flush = 0;
+    if (total_count > replay_buffer_size) {
+        n_flush = count - rollback_window;
+        if (n_flush < total_count - replay_buffer_size) {
+            n_flush = total_count - replay_buffer_size;
+        }
+        n_flush = n_flush > 0 ? n_flush : 0;
+    }
+
+    const uint32_t iq1 = fastmodulo(h_idx, neqk1_magic);
+    const uint32_t iq3 = fastdiv(sequence, rq3_magic);
+
+    const float * checkpoint_head = checkpoint + (sequence * H + h_idx) * S_v * S_v;
+    float * checkpoint_dst = checkpoint_out + (sequence * H + h_idx) * S_v * S_v;
+    float * attn_data = dst + (sequence * n_tokens * H + h_idx) * S_v;
+
+    float s_shard[rows_per_lane];
+#pragma unroll
+    for (int r = 0; r < rows_per_lane; ++r) {
+        const int i = r * warp_size + lane;
+        s_shard[r] = checkpoint_head[col * S_v + i];
+    }
+
+    if (moved && n_flush == 0) {
+#pragma unroll
+        for (int r = 0; r < rows_per_lane; ++r) {
+            const int i = r * warp_size + lane;
+            checkpoint_dst[col * S_v + i] = s_shard[r];
+        }
+    }
+
+    if (moved) {
+        for (int j = 0; j < count; ++j) {
+            const int slot = (base + j) & physical_mask;
+            const float * src_record = replay_src + 2 + slot * record_stride;
+            float * dst_record = replay_dst + 2 + slot * record_stride;
+
+            if (lane == 0) {
+                dst_record[1 + S_v + col] = src_record[1 + S_v + col];
+            }
+            if (blockIdx.z == 0 && threadIdx.y == 0) {
+#pragma unroll
+                for (int r = 0; r < rows_per_lane; ++r) {
+                    const int i = r * warp_size + lane;
+                    dst_record[1 + i] = src_record[1 + i];
+                }
+                if (lane == 0) {
+                    dst_record[0] = src_record[0];
+                }
+            }
+        }
+    }
+
+    for (int j = 0; j < count; ++j) {
+        const int slot = (base + j) & physical_mask;
+        const float * record = replay_src + 2 + slot * record_stride;
+        const float decay = expf(record[0]);
+        const float delta_col = record[1 + S_v + col];
+
+#pragma unroll
+        for (int r = 0; r < rows_per_lane; ++r) {
+            const int i = r * warp_size + lane;
+            s_shard[r] = decay * s_shard[r] + record[1 + i] * delta_col;
+        }
+
+        if (j + 1 == n_flush) {
+#pragma unroll
+            for (int r = 0; r < rows_per_lane; ++r) {
+                const int i = r * warp_size + lane;
+                checkpoint_dst[col * S_v + i] = s_shard[r];
+            }
+        }
+    }
+
+    for (int t = 0; t < n_tokens; ++t) {
+        const float * q_t = q + iq3 * sq3 + t * sq2 + iq1 * sq1;
+        const float * k_t = k + iq3 * sq3 + t * sq2 + iq1 * sq1;
+        const float * v_t = v + sequence * sv3 + t * sv2 + h_idx * sv1;
+        const int64_t gb_offset = sequence * sb3 + t * sb2 + h_idx * sb1;
+        const float beta_val = beta[gb_offset];
+        const float g_val    = g[gb_offset];
+        const float decay    = expf(g_val);
+
+        float k_reg[rows_per_lane];
+        float q_reg[rows_per_lane];
+        float kv_shard = 0.0f;
+#pragma unroll
+        for (int r = 0; r < rows_per_lane; ++r) {
+            const int i = r * warp_size + lane;
+            k_reg[r] = k_t[i];
+            q_reg[r] = q_t[i];
+            s_shard[r] *= decay;
+            kv_shard += s_shard[r] * k_reg[r];
+        }
+
+        const float kv_col = warp_reduce_sum<warp_size>(kv_shard);
+        const float delta_col = (v_t[col] - kv_col) * beta_val;
+
+        float attn_partial = 0.0f;
+#pragma unroll
+        for (int r = 0; r < rows_per_lane; ++r) {
+            s_shard[r] += k_reg[r] * delta_col;
+            attn_partial += s_shard[r] * q_reg[r];
+        }
+
+        const float attn_col = warp_reduce_sum<warp_size>(attn_partial);
+        if (lane == 0) {
+            attn_data[col] = attn_col * scale;
+        }
+        attn_data += S_v * H;
+
+        const int slot = (base + count + t) & physical_mask;
+        float * record = replay_dst + 2 + slot * record_stride;
+        if (lane == 0) {
+            record[1 + S_v + col] = delta_col;
+        }
+        if (blockIdx.z == 0 && threadIdx.y == 0) {
+#pragma unroll
+            for (int r = 0; r < rows_per_lane; ++r) {
+                const int i = r * warp_size + lane;
+                record[1 + i] = k_reg[r];
+            }
+            if (lane == 0) {
+                record[0] = g_val;
+            }
+        }
+    }
+
+    if (blockIdx.z == 0 && threadIdx.y == 0 && lane == 0) {
+        replay_dst[0] = (float) ((base + n_flush) & physical_mask);
+        replay_dst[1] = (float) (total_count - n_flush);
+    }
+}
+
+static void launch_gated_delta_net_replay(
+        const float * q_d, const float * k_d, const float * v_d,
+        const float * g_d, const float * b_d, const float * checkpoint_d,
+        const float * replay_d, const int32_t * state_copy_d, float * replay_all_d,
+        float * dst_d, float * state_d,
+        int64_t S_v, int64_t H, int64_t n_tokens, int64_t n_seqs,
+        int64_t sq1, int64_t sq2, int64_t sq3,
+        int64_t sv1, int64_t sv2, int64_t sv3,
+        int64_t sb1, int64_t sb2, int64_t sb3,
+        int64_t neqk1, int64_t rq3, float scale,
+        int replay_buffer_size, int mem_size, int state_head,
+        int64_t replay_seq_stride, int64_t replay_all_seq_stride, int K,
+        cudaStream_t stream) {
+    const int warp_size = ggml_cuda_info().devices[ggml_cuda_get_device()].warp_size;
+    const int num_warps = 4;
+    dim3 grid_dims(H, n_seqs, (S_v + num_warps - 1) / num_warps);
+    dim3 block_dims(warp_size <= S_v ? warp_size : S_v, num_warps, 1);
+
+    const uint3 neqk1_magic = init_fastdiv_values(neqk1);
+    const uint3 rq3_magic   = init_fastdiv_values(rq3);
+    const ggml_cuda_kernel_launch_params launch_params(grid_dims, block_dims, 0, stream);
+
+#define GGML_CUDA_GDN_REPLAY_CASE(S) \
+    case S: ggml_cuda_kernel_launch(gated_delta_net_replay_cuda<S>, launch_params, \
+        q_d, k_d, v_d, g_d, b_d, checkpoint_d, replay_d, state_copy_d, replay_all_d, dst_d, state_d, H, \
+        n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3, sb1, sb2, sb3, neqk1_magic, rq3_magic, scale, \
+        replay_buffer_size, mem_size, state_head, replay_seq_stride, replay_all_seq_stride, K); break
+
+    switch (S_v) {
+        GGML_CUDA_GDN_REPLAY_CASE(16);
+        GGML_CUDA_GDN_REPLAY_CASE(32);
+        GGML_CUDA_GDN_REPLAY_CASE(64);
+        GGML_CUDA_GDN_REPLAY_CASE(128);
+        default: GGML_ABORT("fatal error");
+    }
+#undef GGML_CUDA_GDN_REPLAY_CASE
+}
+
 template <bool KDA, bool keep_rs_t>
 static void launch_gated_delta_net(
         const float * q_d, const float * k_d, const float * v_d,
@@ -288,6 +523,29 @@ static void ggml_cuda_op_gated_delta_net_impl(
     // K (snapshot slot count) is an op param; state holds s0 only [S_v, S_v, H, n_seqs].
     const int K = ggml_get_op_params_i32(dst, 0);
     const bool keep_rs = K > 1;
+
+    const bool use_replay = cache != nullptr && !kda && dst->src[6] != nullptr;
+    if (use_replay) {
+        ggml_tensor * src_replay          = dst->src[6];
+        ggml_tensor * src_state_copy      = dst->src[7];
+        ggml_tensor * src_checkpoint      = dst->src[8];
+        ggml_tensor * src_replay_all      = dst->src[9];
+        const int replay_buffer_size      = ggml_get_op_params_i32(dst, 1);
+        const int mem_size                = ggml_get_op_params_i32(dst, 2);
+        const int state_head              = ggml_get_op_params_i32(dst, 3);
+        const int64_t replay_seq_stride   = src_replay->nb[1] / sizeof(float);
+        const int64_t replay_all_stride   = src_replay_all->nb[1] / sizeof(float);
+
+        GGML_ASSERT(src_replay->type == GGML_TYPE_F32 && src_replay_all->type == GGML_TYPE_F32);
+        GGML_ASSERT(src_state_copy->type == GGML_TYPE_I32 && src_checkpoint->type == GGML_TYPE_F32);
+        launch_gated_delta_net_replay(q_d, k_d, v_d, g_d, b_d,
+            (const float *) src_checkpoint->data, (const float *) src_replay->data,
+            (const int32_t *) src_state_copy->data, (float *) src_replay_all->data,
+            dst_d, cache->data, S_v, H, n_tokens, n_seqs, sq1, sq2, sq3, sv1, sv2, sv3,
+            sb1, sb2, sb3, neqk1, rq3, scale, replay_buffer_size, mem_size, state_head,
+            replay_seq_stride, replay_all_stride, K, stream);
+        return;
+    }
 
     // recurrent state -> gdn_out tail (after attention scores), or the cache when fusing
     float * state_d           = dst_d + S_v * H * n_tokens * n_seqs;
