@@ -49,7 +49,8 @@ llama_memory_recurrent::llama_memory_recurrent(
     const bool use_gdn_replay = model.arch == LLM_ARCH_QWEN3NEXT || model.arch == LLM_ARCH_QWEN35 || model.arch == LLM_ARCH_QWEN35MOE;
     if (use_gdn_replay) {
         gdn_replay_buffer_size = 16;
-        while (gdn_replay_buffer_size <= n_rs_seq) {
+        const uint32_t min_replay_size = 2 * n_rs_seq + 2;
+        while (gdn_replay_buffer_size < min_replay_size) {
             gdn_replay_buffer_size *= 2;
         }
     }
