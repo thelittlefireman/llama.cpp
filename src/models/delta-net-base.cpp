@@ -545,6 +545,48 @@ ggml_tensor * llm_build_delta_net_base::build_recurrent_attn(
 
     const bool keep = cparams.n_rs_seq > 0;
 
+    ggml_tensor * replay = mctx_cur->get_gdn_replay_l(il);
+    const uint32_t replay_buffer_size = mctx_cur->get_gdn_replay_buffer_size();
+    const bool use_replay = replay != nullptr && g->ne[0] == 1 &&
+        (n_seq_tokens == 1 || (keep && n_seq_tokens <= (int64_t) cparams.n_rs_seq + 1));
+
+    if (use_replay) {
+        const int64_t D = S_v * S_v * H_v;
+        const int64_t K = keep ? (int64_t) cparams.n_rs_seq + 1 : 1;
+        ggml_tensor * state_copy = ggml_dup(ctx0, inp->s_copy_main);
+        ggml_tensor * gdn_out = ggml_gated_delta_net_replay(ctx0, q, k, v, g, b, s, replay, state_copy,
+                                                             ssm_states_all, K, replay_buffer_size, mem_size, kv_head);
+        if (n_seq_tokens > 1) {
+            res->add_fused_node({LLM_FUSED_OP_GDN_CH, gdn_out, il});
+        } else {
+            res->add_fused_node({LLM_FUSED_OP_GDN_AR, gdn_out, il});
+        }
+
+        ggml_tensor * output = ggml_view_4d(ctx0, gdn_out,
+            S_v, H_v, n_seq_tokens, n_seqs,
+            ggml_row_size(gdn_out->type, S_v),
+            ggml_row_size(gdn_out->type, S_v * H_v),
+            ggml_row_size(gdn_out->type, S_v * H_v * n_seq_tokens), 0);
+        cb(output, "attn_output", il);
+
+        const int64_t attn_score_elems    = S_v * H_v * n_seq_tokens * n_seqs;
+        const int64_t state_size_per_snap = S_v * S_v * H_v * n_seqs;
+        const int64_t n_written           = std::min<int64_t>(n_seq_tokens, K);
+        const size_t row_size             = hparams.n_embd_s() * ggml_element_size(ssm_states_all);
+        ggml_tensor * src = ggml_view_3d(ctx0, gdn_out,
+            D, n_seqs, n_written,
+            ggml_row_size(gdn_out->type, D),
+            ggml_row_size(gdn_out->type, state_size_per_snap),
+            ggml_row_size(gdn_out->type, attn_score_elems));
+        ggml_tensor * dst = ggml_view_3d(ctx0, ssm_states_all,
+            D, n_seqs, n_written,
+            ssm_states_all->nb[1],
+            (size_t) mem_size * row_size,
+            (size_t) kv_head * row_size);
+        ggml_build_forward_expand(gf, ggml_cpy(ctx0, src, dst));
+        return output;
+    }
+
     if (!keep) {
         auto attn_out = build_delta_net(q, k, v, g, b, s, il);
         ggml_tensor * output    = attn_out.first;

@@ -2583,6 +2583,24 @@ extern "C" {
             struct ggml_tensor  * state,
             int64_t               K);
 
+    // Same operation with persistent ReplaySSM metadata attached. Backends that do not
+    // implement replay can ignore src[6..8] and execute the regular GDN path.
+    GGML_API struct ggml_tensor * ggml_gated_delta_net_replay(
+            struct ggml_context * ctx,
+            struct ggml_tensor  * q,
+            struct ggml_tensor  * k,
+            struct ggml_tensor  * v,
+            struct ggml_tensor  * g,
+            struct ggml_tensor  * beta,
+            struct ggml_tensor  * state,
+            struct ggml_tensor  * replay,
+            struct ggml_tensor  * state_copy,
+            struct ggml_tensor  * state_all,
+            int64_t               K,
+            int64_t               replay_buffer_size,
+            int64_t               mem_size,
+            int64_t               state_head);
+
     // DSA lightning indexer
     //
     // q:       [n_embd_idx, n_head_idx, n_batch, ne3 ]

@@ -6253,7 +6253,7 @@ struct ggml_tensor * ggml_solve_tri(
 
 // ggml_gated_delta_net
 
-struct ggml_tensor * ggml_gated_delta_net(
+static struct ggml_tensor * ggml_gated_delta_net_impl(
         struct ggml_context * ctx,
         struct ggml_tensor  * q,
         struct ggml_tensor  * k,
@@ -6261,7 +6261,13 @@ struct ggml_tensor * ggml_gated_delta_net(
         struct ggml_tensor  * g,
         struct ggml_tensor  * beta,
         struct ggml_tensor  * state,
-        int64_t               K) {
+        struct ggml_tensor  * replay,
+        struct ggml_tensor  * state_copy,
+        struct ggml_tensor  * state_all,
+        int64_t               K,
+        int64_t               replay_buffer_size,
+        int64_t               mem_size,
+        int64_t               state_head) {
     GGML_ASSERT(ggml_is_contiguous_rows(q));
     GGML_ASSERT(ggml_is_contiguous_rows(k));
     GGML_ASSERT(ggml_is_contiguous_rows(v));
@@ -6281,21 +6287,35 @@ struct ggml_tensor * ggml_gated_delta_net(
     const int64_t n_tokens = v->ne[2];
     const int64_t n_seqs   = v->ne[3];
 
-    // gate: scalar [1, H, T, B] or vector [S_v, H, T, B] (KDA)
     GGML_ASSERT(g->ne[0] == 1 || g->ne[0] == S_v);
     GGML_ASSERT(beta->ne[0] == 1);
-
-    // state holds the initial state s0 only: [S_v, S_v, H, n_seqs]. K (snapshot slot count) is an op param.
     GGML_ASSERT(state->ne[0] == S_v);
     GGML_ASSERT(state->ne[1] == S_v);
     GGML_ASSERT(state->ne[2] == H);
     GGML_ASSERT(state->ne[3] == n_seqs);
     GGML_ASSERT(K >= 1);
+
+    if (replay != nullptr) {
+        GGML_ASSERT(state_copy != nullptr && state_all != nullptr);
+        GGML_ASSERT(replay->type == GGML_TYPE_F32);
+        GGML_ASSERT(state_copy->type == GGML_TYPE_I32);
+        GGML_ASSERT(state_all->type == GGML_TYPE_F32);
+        GGML_ASSERT(ggml_is_contiguous(replay));
+        GGML_ASSERT(ggml_is_contiguous(state_copy));
+        GGML_ASSERT(ggml_is_contiguous(state_all));
+        GGML_ASSERT(state_copy->ne[0] == n_seqs);
+        GGML_ASSERT(replay_buffer_size > 0 && (replay_buffer_size & (replay_buffer_size - 1)) == 0);
+        GGML_ASSERT(mem_size > 0 && state_head >= 0 && state_head + n_seqs <= mem_size);
+    }
+
     const int64_t state_rows = K * S_v * n_seqs;
     const int64_t ne[4] = { S_v * H, n_tokens * n_seqs + state_rows, 1, 1 };
     struct ggml_tensor * result = ggml_new_tensor(ctx, GGML_TYPE_F32, 4, ne);
 
     ggml_set_op_params_i32(result, 0, (int32_t) K);
+    ggml_set_op_params_i32(result, 1, (int32_t) replay_buffer_size);
+    ggml_set_op_params_i32(result, 2, (int32_t) mem_size);
+    ggml_set_op_params_i32(result, 3, (int32_t) state_head);
 
     result->op     = GGML_OP_GATED_DELTA_NET;
     result->src[0] = q;
@@ -6304,8 +6324,42 @@ struct ggml_tensor * ggml_gated_delta_net(
     result->src[3] = g;
     result->src[4] = beta;
     result->src[5] = state;
+    result->src[6] = replay;
+    result->src[7] = state_copy;
+    result->src[8] = state_all;
 
     return result;
+}
+
+struct ggml_tensor * ggml_gated_delta_net(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * q,
+        struct ggml_tensor  * k,
+        struct ggml_tensor  * v,
+        struct ggml_tensor  * g,
+        struct ggml_tensor  * beta,
+        struct ggml_tensor  * state,
+        int64_t               K) {
+    return ggml_gated_delta_net_impl(ctx, q, k, v, g, beta, state, nullptr, nullptr, nullptr, K, 0, 0, 0);
+}
+
+struct ggml_tensor * ggml_gated_delta_net_replay(
+        struct ggml_context * ctx,
+        struct ggml_tensor  * q,
+        struct ggml_tensor  * k,
+        struct ggml_tensor  * v,
+        struct ggml_tensor  * g,
+        struct ggml_tensor  * beta,
+        struct ggml_tensor  * state,
+        struct ggml_tensor  * replay,
+        struct ggml_tensor  * state_copy,
+        struct ggml_tensor  * state_all,
+        int64_t               K,
+        int64_t               replay_buffer_size,
+        int64_t               mem_size,
+        int64_t               state_head) {
+    return ggml_gated_delta_net_impl(ctx, q, k, v, g, beta, state, replay, state_copy, state_all,
+                                     K, replay_buffer_size, mem_size, state_head);
 }
 
 // ggml_lightning_indexer
