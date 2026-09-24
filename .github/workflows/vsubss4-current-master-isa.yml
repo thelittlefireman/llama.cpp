@@ -1,0 +1,89 @@
+name: vsubss4 current master ISA diagnostic
+
+on:
+  push:
+    branches:
+      - test-vsubss4-current-master
+    paths:
+      - .github/workflows/vsubss4-current-master-isa.yml
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [gfx906, gfx1152]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: a72e04abe0fe9b36e203033ac71bd5f379c35bc5
+          path: src-master
+          fetch-depth: 1
+
+      - uses: actions/checkout@v4
+        with:
+          ref: 5dc58c7130d7fae3d7cf29c87ae7341a2936c410
+          path: src-opt
+          fetch-depth: 1
+
+      - name: Download ROCm 7.14 nightly
+        shell: bash
+        run: |
+          set -euxo pipefail
+          tarball="therock-dist-linux-${{ matrix.arch }}-7.14.0a20260624.tar.gz"
+          mkdir -p "$RUNNER_TEMP/rocm-nightly"
+          curl -fL --retry 5 --retry-all-errors "https://rocm.nightlies.amd.com/tarball-multi-arch/$tarball" -o "$RUNNER_TEMP/rocm-nightly.tar.gz"
+          tar -xzf "$RUNNER_TEMP/rocm-nightly.tar.gz" -C "$RUNNER_TEMP/rocm-nightly"
+          hipcc="$(find "$RUNNER_TEMP/rocm-nightly" -type f -name hipcc -perm -u+x | head -n1)"
+          rocm_root="$(cd "$(dirname "$hipcc")/.." && pwd)"
+          echo "ROCM_ROOT=$rocm_root" >> "$GITHUB_ENV"
+          echo "$rocm_root/bin" >> "$GITHUB_PATH"
+          echo "$rocm_root/lib/llvm/bin" >> "$GITHUB_PATH"
+          echo "LD_LIBRARY_PATH=$rocm_root/lib:$rocm_root/lib64:$rocm_root/lib/llvm/lib:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+          echo "CMAKE_PREFIX_PATH=$rocm_root" >> "$GITHUB_ENV"
+          echo "HIP_PATH=$rocm_root" >> "$GITHUB_ENV"
+          echo "ROCM_PATH=$rocm_root" >> "$GITHUB_ENV"
+          "$rocm_root/lib/llvm/bin/clang++" --version
+
+      - name: Configure and build both variants
+        shell: bash
+        run: |
+          set -euxo pipefail
+          HIP_FLAGS='-O3 -ffast-math -funsafe-math-optimizations -fno-finite-math-only --save-temps=obj -Rpass-analysis=kernel-resource-usage'
+          for variant in master opt; do
+            cmake -S "src-$variant" -B "build-$variant" -G Ninja \
+              -DGGML_HIP=ON \
+              -DAMDGPU_TARGETS=${{ matrix.arch }} \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_HIP_COMPILER="$ROCM_ROOT/lib/llvm/bin/clang++" \
+              -DCMAKE_HIP_FLAGS="$HIP_FLAGS" \
+              -DCMAKE_PREFIX_PATH="$ROCM_ROOT" \
+              -DGGML_NATIVE=OFF \
+              -DGGML_BUILD_TESTS=OFF \
+              -DGGML_BUILD_EXAMPLES=OFF \
+              -DGGML_BUILD_SERVER=OFF
+            cmake --build "build-$variant" --target ggml-hip -j2 2>&1 | tee "$variant-build.log"
+            find "build-$variant" -type f -name '*.s' | sort > "$variant-asm-files.txt"
+            grep -E 'Function Name:|SGPRs:|VGPRs:|ScratchSize|Occupancy|SGPRs Spill|VGPRs Spill|LDS Size' "$variant-build.log" > "$variant-resource.txt" || true
+          done
+
+      - name: Package
+        shell: bash
+        run: |
+          mkdir -p out/master out/opt
+          cp master-build.log master-resource.txt master-asm-files.txt out/master/
+          cp opt-build.log opt-resource.txt opt-asm-files.txt out/opt/
+          find build-master -type f -name '*.s' -print0 | tar --null -T - -czf out/master/saved-asm.tar.gz
+          find build-opt -type f -name '*.s' -print0 | tar --null -T - -czf out/opt/saved-asm.tar.gz
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vsubss4-current-master-${{ matrix.arch }}
+          path: out/
+          compression-level: 0
+          retention-days: 1
