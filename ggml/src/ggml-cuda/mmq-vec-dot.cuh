@@ -46,35 +46,16 @@ static __device__ __forceinline__ void ggml_cuda_mmq_vec_dot_q4_0_q4_0_dp8a(
                     sumi = ggml_cuda_dp8a(vx[l] ^ 0x88888888, vy4[l], sumi);
                 }
 
-                const half2 ds = y_ds[j*MMQ_TILE_Y_K + group];
-                const float dy = __low2float(ds);
+                const float dy = __low2float(y_ds[j*MMQ_TILE_Y_K + group]);
                 if constexpr (residual) {
                     const int * vyr = vy + QK8_1_MMQ/(2*sizeof(int));
                     int vyr4[VDR_Q4_0_Q8_1_MMQ];
                     ggml_cuda_memcpy_1<sizeof(vyr4)>(vyr4, vyr);
 
                     int sumr = 0;
-                    switch ((int) __high2float(ds)) {
-                        case 0:
-                            sumr = ggml_cuda_dp8a(vx[1] ^ 0x88888888, vyr4[1], sumr);
-                            sumr = ggml_cuda_dp8a(vx[2] ^ 0x88888888, vyr4[2], sumr);
-                            sumr = ggml_cuda_dp8a(vx[3] ^ 0x88888888, vyr4[3], sumr);
-                            break;
-                        case 1:
-                            sumr = ggml_cuda_dp8a(vx[0] ^ 0x88888888, vyr4[0], sumr);
-                            sumr = ggml_cuda_dp8a(vx[2] ^ 0x88888888, vyr4[2], sumr);
-                            sumr = ggml_cuda_dp8a(vx[3] ^ 0x88888888, vyr4[3], sumr);
-                            break;
-                        case 2:
-                            sumr = ggml_cuda_dp8a(vx[0] ^ 0x88888888, vyr4[0], sumr);
-                            sumr = ggml_cuda_dp8a(vx[1] ^ 0x88888888, vyr4[1], sumr);
-                            sumr = ggml_cuda_dp8a(vx[3] ^ 0x88888888, vyr4[3], sumr);
-                            break;
-                        default:
-                            sumr = ggml_cuda_dp8a(vx[0] ^ 0x88888888, vyr4[0], sumr);
-                            sumr = ggml_cuda_dp8a(vx[1] ^ 0x88888888, vyr4[1], sumr);
-                            sumr = ggml_cuda_dp8a(vx[2] ^ 0x88888888, vyr4[2], sumr);
-                            break;
+#pragma unroll
+                    for (int l = 0; l < VDR_Q4_0_Q8_1_MMQ; ++l) {
+                        sumr = ggml_cuda_dp8a(vx[l] ^ 0x88888888, vyr4[l], sumr);
                     }
                     sum[j0/nwarps*I/warp_size + i0/warp_size] += dx*dy*(sumi + sumr*(1.0f/16.0f));
                 } else {

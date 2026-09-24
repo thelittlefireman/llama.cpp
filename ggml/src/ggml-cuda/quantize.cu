@@ -562,46 +562,22 @@ static __global__ void quantize_mmq_q4_0(
                             (((uint32_t) q3 & 0x0Fu) << 24) | (((uint32_t) q7 & 0x0Fu) << 28);
 
     uint32_t packed_residual = 0;
-    int residual_skip = 0;
     if (residual) {
         constexpr float residual_div = 16.0f;
         const float dr = d / residual_div;
         const float dr_inv = dr != 0.0f ? 1.0f / dr : 0.0f;
-        const float e0 = x0.x - d*q0;
-        const float e1 = x0.y - d*q1;
-        const float e2 = x0.z - d*q2;
-        const float e3 = x0.w - d*q3;
-        const float e4 = x1.x - d*q4;
-        const float e5 = x1.y - d*q5;
-        const float e6 = x1.z - d*q6;
-        const float e7 = x1.w - d*q7;
-        const int r0 = max(-8, min(7, (int) roundf(e0*dr_inv)));
-        const int r1 = max(-8, min(7, (int) roundf(e1*dr_inv)));
-        const int r2 = max(-8, min(7, (int) roundf(e2*dr_inv)));
-        const int r3 = max(-8, min(7, (int) roundf(e3*dr_inv)));
-        const int r4 = max(-8, min(7, (int) roundf(e4*dr_inv)));
-        const int r5 = max(-8, min(7, (int) roundf(e5*dr_inv)));
-        const int r6 = max(-8, min(7, (int) roundf(e6*dr_inv)));
-        const int r7 = max(-8, min(7, (int) roundf(e7*dr_inv)));
+        const int r0 = max(-8, min(7, (int) roundf((x0.x - d*q0)*dr_inv)));
+        const int r1 = max(-8, min(7, (int) roundf((x0.y - d*q1)*dr_inv)));
+        const int r2 = max(-8, min(7, (int) roundf((x0.z - d*q2)*dr_inv)));
+        const int r3 = max(-8, min(7, (int) roundf((x0.w - d*q3)*dr_inv)));
+        const int r4 = max(-8, min(7, (int) roundf((x1.x - d*q4)*dr_inv)));
+        const int r5 = max(-8, min(7, (int) roundf((x1.y - d*q5)*dr_inv)));
+        const int r6 = max(-8, min(7, (int) roundf((x1.z - d*q6)*dr_inv)));
+        const int r7 = max(-8, min(7, (int) roundf((x1.w - d*q7)*dr_inv)));
         packed_residual = ((uint32_t) r0 & 0x0Fu) | (((uint32_t) r4 & 0x0Fu) << 4) |
                           (((uint32_t) r1 & 0x0Fu) << 8) | (((uint32_t) r5 & 0x0Fu) << 12) |
                           (((uint32_t) r2 & 0x0Fu) << 16) | (((uint32_t) r6 & 0x0Fu) << 20) |
                           (((uint32_t) r3 & 0x0Fu) << 24) | (((uint32_t) r7 & 0x0Fu) << 28);
-
-        float min_energy = e0*e0 + e1*e1 + e2*e2 + e3*e3 + e4*e4 + e5*e5 + e6*e6 + e7*e7;
-        residual_skip = lane;
-#pragma unroll
-        for (int offset = 1; offset <= 2; offset <<= 1) {
-            const float other_energy = __shfl_xor_sync(0xFFFFFFFF, min_energy, offset, WARP_SIZE);
-            const int other_skip = __shfl_xor_sync(0xFFFFFFFF, residual_skip, offset, WARP_SIZE);
-            if (other_energy < min_energy || (other_energy == min_energy && other_skip < residual_skip)) {
-                min_energy = other_energy;
-                residual_skip = other_skip;
-            }
-        }
-        if (lane == residual_skip) {
-            packed_residual = 0;
-        }
     }
 
     block_q8_1_mmq * y = (block_q8_1_mmq *) vy;
@@ -624,7 +600,7 @@ static __global__ void quantize_mmq_q4_0(
             y_d8[4*group + lane] = __float2half(d);
         }
     } else {
-        const float d1 = residual ? (float) residual_skip : (scale16 ? __shfl_xor_sync(0xFFFFFFFF, d, 2, WARP_SIZE) : 0.0f);
+        const float d1 = scale16 ? __shfl_xor_sync(0xFFFFFFFF, d, 2, WARP_SIZE) : 0.0f;
         if (lane == 0) {
             y[ib].ds4[group] = make_half2(d, d1);
         }
