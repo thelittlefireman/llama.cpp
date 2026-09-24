@@ -46,12 +46,20 @@ llama_memory_recurrent::llama_memory_recurrent(
     };
     std::map<ggml_backend_buffer_type_t, ggml_context_ptr, ggml_backend_buft_comparator> ctx_map;
 
+    const bool use_gdn_replay = model.arch == LLM_ARCH_QWEN3NEXT || model.arch == LLM_ARCH_QWEN35 || model.arch == LLM_ARCH_QWEN35MOE;
+    if (use_gdn_replay) {
+        gdn_replay_buffer_size = 16;
+        while (gdn_replay_buffer_size <= n_rs_seq) {
+            gdn_replay_buffer_size *= 2;
+        }
+    }
+
     // create a context for each buffer type
     auto ctx_for_buft = [&](ggml_backend_buffer_type_t buft) -> ggml_context * {
         auto it = ctx_map.find(buft);
         if (it == ctx_map.end()) {
             ggml_init_params params = {
-                /*.mem_size   =*/ size_t(2u*n_layer*ggml_tensor_overhead()),
+                /*.mem_size   =*/ size_t((use_gdn_replay ? 3u : 2u)*n_layer*ggml_tensor_overhead()),
                 /*.mem_buffer =*/ NULL,
                 /*.no_alloc   =*/ true,
             };
@@ -71,6 +79,7 @@ llama_memory_recurrent::llama_memory_recurrent(
 
     r_l.resize(n_layer);
     s_l.resize(n_layer);
+    gdn_replay_l.resize(n_layer);
 
     for (int i = 0; i < n_layer; i++) {
         if (filter && !filter(i)) {
@@ -103,6 +112,16 @@ llama_memory_recurrent::llama_memory_recurrent(
         ggml_format_name(s, "cache_s_l%d", i);
         r_l[i] = r;
         s_l[i] = s;
+
+        if (use_gdn_replay) {
+            const uint32_t state_dim = hparams.ssm_d_state;
+            const uint32_t n_heads   = hparams.ssm_dt_rank;
+            GGML_ASSERT(state_dim > 0 && n_heads > 0);
+            const uint32_t replay_head_size = 2 + gdn_replay_buffer_size * (2 * state_dim + 1);
+            ggml_tensor * replay = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n_heads * replay_head_size, mem_size);
+            ggml_format_name(replay, "cache_gdn_replay_l%d", i);
+            gdn_replay_l[i] = replay;
+        }
     }
 
     // allocate tensors and initialize the buffers to avoid NaNs in the padding
@@ -1241,6 +1260,14 @@ ggml_tensor * llama_memory_recurrent_context::get_r_l(int32_t il) const {
 
 ggml_tensor * llama_memory_recurrent_context::get_s_l(int32_t il) const {
     return mem->s_l[il];
+}
+
+ggml_tensor * llama_memory_recurrent_context::get_gdn_replay_l(int32_t il) const {
+    return mem->gdn_replay_l[il];
+}
+
+uint32_t llama_memory_recurrent_context::get_gdn_replay_buffer_size() const {
+    return mem->gdn_replay_buffer_size;
 }
 
 int32_t llama_memory_recurrent_context::s_copy(int i) const {

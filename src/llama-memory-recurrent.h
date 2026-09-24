@@ -111,6 +111,9 @@ public:
     // per layer
     std::vector<ggml_tensor *> r_l;
     std::vector<ggml_tensor *> s_l;
+    std::vector<ggml_tensor *> gdn_replay_l;
+
+    uint32_t gdn_replay_buffer_size = 0;
 
 private:
     //const llama_model & model;
@@ -170,6 +173,8 @@ public:
 
     ggml_tensor * get_r_l(int32_t il) const;
     ggml_tensor * get_s_l(int32_t il) const;
+    ggml_tensor * get_gdn_replay_l(int32_t il) const;
+    uint32_t get_gdn_replay_buffer_size() const;
 
     int32_t s_copy(int i) const;
 
