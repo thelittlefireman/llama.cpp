@@ -508,7 +508,7 @@ static __device__ __forceinline__ void dequantize_V_q5_0(const void * __restrict
         }
     }
 
-    q = __vsubss4(q, 0x10101010);
+    q = ggml_cuda_vsubss4_nonnegative(q, 0x10101010);
 
     const int8_t * q8 = (const int8_t *) &q;
 
