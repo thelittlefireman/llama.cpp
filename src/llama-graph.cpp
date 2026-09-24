@@ -1046,11 +1046,15 @@ void llm_graph_input_mem_hybrid::set_input(const llama_ubatch * ubatch) {
 
     if (inp_rs->s_copy) {
         GGML_ASSERT(ggml_backend_buffer_is_host(inp_rs->s_copy->buffer));
-        int32_t * data = (int32_t *) inp_rs->s_copy->data;
+        GGML_ASSERT(ggml_backend_buffer_is_host(inp_rs->s_copy_base->buffer));
+        int32_t * data      = (int32_t *) inp_rs->s_copy->data;
+        int32_t * data_base = (int32_t *) inp_rs->s_copy_base->data;
+        const uint32_t size = mctx->get_recr()->get_size();
 
         // assuming copy destinations ALWAYS happen ONLY on the cells between head and head+n
         for (uint32_t i = 0; i < n_rs; ++i) {
-            data[i] = mctx->get_recr()->s_copy(i);
+            data[i]      = mctx->get_recr()->s_copy(i);
+            data_base[i] = data[i] % (int32_t) size;
         }
     }
 }
@@ -1068,6 +1072,7 @@ bool llm_graph_input_mem_hybrid::can_reuse(const llm_graph_params & params) {
     res &= can_reuse_kq_mask(inp_attn->self_kq_mask, mctx->get_attn(), params.ubatch, params.cparams);
 
     res &= inp_rs->s_copy->ne[0] == mctx->get_recr()->get_n_rs();
+    res &= inp_rs->s_copy_base->ne[0] == mctx->get_recr()->get_n_rs();
 
     res &= inp_rs->s_copy_main->ne[0]  == params.ubatch.n_seqs;
     res &= inp_rs->s_copy_extra->ne[0] == mctx->get_recr()->get_n_rs() - params.ubatch.n_seqs;
@@ -1090,11 +1095,15 @@ void llm_graph_input_mem_hybrid_k::set_input(const llama_ubatch * ubatch) {
 
     if (inp_rs->s_copy) {
         GGML_ASSERT(ggml_backend_buffer_is_host(inp_rs->s_copy->buffer));
-        int32_t * data = (int32_t *) inp_rs->s_copy->data;
+        GGML_ASSERT(ggml_backend_buffer_is_host(inp_rs->s_copy_base->buffer));
+        int32_t * data      = (int32_t *) inp_rs->s_copy->data;
+        int32_t * data_base = (int32_t *) inp_rs->s_copy_base->data;
+        const uint32_t size = mctx->get_recr()->get_size();
 
         // assuming copy destinations ALWAYS happen ONLY on the cells between head and head+n
         for (uint32_t i = 0; i < n_rs; ++i) {
-            data[i] = mctx->get_recr()->s_copy(i);
+            data[i]      = mctx->get_recr()->s_copy(i);
+            data_base[i] = data[i] % (int32_t) size;
         }
     }
 }
@@ -1111,6 +1120,7 @@ bool llm_graph_input_mem_hybrid_k::can_reuse(const llm_graph_params & params) {
     res &= can_reuse_kq_mask(inp_attn->self_kq_mask, mctx->get_attn(), params.ubatch, params.cparams);
 
     res &= inp_rs->s_copy->ne[0] == mctx->get_recr()->get_n_rs();
+    res &= inp_rs->s_copy_base->ne[0] == mctx->get_recr()->get_n_rs();
 
     res &= inp_rs->s_copy_main->ne[0]  == params.ubatch.n_seqs;
     res &= inp_rs->s_copy_extra->ne[0] == mctx->get_recr()->get_n_rs() - params.ubatch.n_seqs;
@@ -1164,11 +1174,15 @@ void llm_graph_input_mem_hybrid_iswa::set_input(const llama_ubatch * ubatch) {
 
     if (inp_rs->s_copy) {
         GGML_ASSERT(ggml_backend_buffer_is_host(inp_rs->s_copy->buffer));
-        int32_t * data = (int32_t *) inp_rs->s_copy->data;
+        GGML_ASSERT(ggml_backend_buffer_is_host(inp_rs->s_copy_base->buffer));
+        int32_t * data      = (int32_t *) inp_rs->s_copy->data;
+        int32_t * data_base = (int32_t *) inp_rs->s_copy_base->data;
+        const uint32_t size = mctx->get_recr()->get_size();
 
         // assuming copy destinations ALWAYS happen ONLY on the cells between head and head+n
         for (uint32_t i = 0; i < n_rs; ++i) {
-            data[i] = mctx->get_recr()->s_copy(i);
+            data[i]      = mctx->get_recr()->s_copy(i);
+            data_base[i] = data[i] % (int32_t) size;
         }
     }
 }
@@ -1199,6 +1213,7 @@ bool llm_graph_input_mem_hybrid_iswa::can_reuse(const llm_graph_params & params)
     res &= can_reuse_kq_mask(inp_attn->self_kq_mask_swa, attn_ctx->get_swa(), params.ubatch, params.cparams);
 
     res &= inp_rs->s_copy->ne[0] == mctx->get_recr()->get_n_rs();
+    res &= inp_rs->s_copy_base->ne[0] == mctx->get_recr()->get_n_rs();
 
     res &= inp_rs->s_copy_main->ne[0]  == params.ubatch.n_seqs;
     res &= inp_rs->s_copy_extra->ne[0] == mctx->get_recr()->get_n_rs() - params.ubatch.n_seqs;
