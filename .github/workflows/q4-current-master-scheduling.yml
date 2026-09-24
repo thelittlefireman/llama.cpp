@@ -1,0 +1,78 @@
+name: q4 current master scheduling diagnostic
+on:
+  push:
+    branches: [test-q4-current-master-scheduling]
+    paths: [.github/workflows/q4-current-master-scheduling.yml]
+permissions:
+  contents: read
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [gfx906, gfx1152]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: a72e04abe0fe9b36e203033ac71bd5f379c35bc5
+          path: src-master
+          fetch-depth: 1
+      - uses: actions/checkout@v4
+        with:
+          ref: 5dc58c7130d7fae3d7cf29c87ae7341a2936c410
+          path: src-fast
+          fetch-depth: 1
+      - name: Enable Q4 FATTN fast subtraction
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("src-fast/ggml/src/ggml-cuda/fattn-common.cuh")
+          s = p.read_text()
+          old = "q = __vsubss4(q, 0x08080808);"
+          new = "q = ggml_cuda_vsubss4_nonnegative(q, 0x08080808);"
+          assert s.count(old) == 1
+          p.write_text(s.replace(old, new))
+          PY
+      - name: Download ROCm 7.14 nightly
+        shell: bash
+        run: |
+          set -euxo pipefail
+          tarball="therock-dist-linux-${{ matrix.arch }}-7.14.0a20260624.tar.gz"
+          mkdir -p "$RUNNER_TEMP/rocm-nightly"
+          curl -fL --retry 5 --retry-all-errors "https://rocm.nightlies.amd.com/tarball-multi-arch/$tarball" -o "$RUNNER_TEMP/rocm-nightly.tar.gz"
+          tar -xzf "$RUNNER_TEMP/rocm-nightly.tar.gz" -C "$RUNNER_TEMP/rocm-nightly"
+          hipcc="$(find "$RUNNER_TEMP/rocm-nightly" -type f -name hipcc -perm -u+x | head -n1)"
+          rocm_root="$(cd "$(dirname "$hipcc")/.." && pwd)"
+          echo "ROCM_ROOT=$rocm_root" >> "$GITHUB_ENV"
+          echo "$rocm_root/bin" >> "$GITHUB_PATH"
+          echo "$rocm_root/lib/llvm/bin" >> "$GITHUB_PATH"
+          echo "LD_LIBRARY_PATH=$rocm_root/lib:$rocm_root/lib64:$rocm_root/lib/llvm/lib:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+          echo "CMAKE_PREFIX_PATH=$rocm_root" >> "$GITHUB_ENV"
+      - name: Build Q4 FATTN
+        shell: bash
+        run: |
+          set -euxo pipefail
+          HIP_FLAGS='-O3 -ffast-math -funsafe-math-optimizations -fno-finite-math-only --save-temps=obj -Rpass-analysis=kernel-resource-usage'
+          for variant in master fast; do
+            cmake -S "src-$variant" -B "build-$variant" -G Ninja -DGGML_HIP=ON -DAMDGPU_TARGETS=${{ matrix.arch }} -DCMAKE_BUILD_TYPE=Release -DCMAKE_HIP_COMPILER="$ROCM_ROOT/lib/llvm/bin/clang++" -DCMAKE_HIP_FLAGS="$HIP_FLAGS" -DCMAKE_PREFIX_PATH="$ROCM_ROOT" -DGGML_NATIVE=OFF -DGGML_BUILD_TESTS=OFF -DGGML_BUILD_EXAMPLES=OFF -DGGML_BUILD_SERVER=OFF
+            target="$(ninja -C "build-$variant" -t targets all | sed -n 's/:.*//p' | grep 'fattn-vec-instance-q4_0-q4_0.*\.o$' | head -n1)"
+            test -n "$target"
+            ninja -C "build-$variant" "$target" -j2 2>&1 | tee "$variant.log"
+            find "build-$variant" -type f -name 'fattn-vec-instance-q4_0-q4_0*.s' | sort > "$variant-asm.txt"
+          done
+      - name: Package
+        run: |
+          mkdir -p out/master out/fast
+          cp master.log master-asm.txt out/master/
+          cp fast.log fast-asm.txt out/fast/
+          while read -r f; do cp "$f" out/master/; done < master-asm.txt
+          while read -r f; do cp "$f" out/fast/; done < fast-asm.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: q4-current-master-${{ matrix.arch }}
+          path: out/
+          compression-level: 0
+          retention-days: 1
