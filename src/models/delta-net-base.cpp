@@ -554,8 +554,13 @@ ggml_tensor * llm_build_delta_net_base::build_recurrent_attn(
         const int64_t D = S_v * S_v * H_v;
         const int64_t K = keep ? (int64_t) cparams.n_rs_seq + 1 : 1;
         ggml_tensor * state_copy = ggml_dup(ctx0, inp->s_copy_main);
-        ggml_tensor * gdn_out = ggml_gated_delta_net_replay(ctx0, q, k, v, g, b, s, replay, state_copy,
-                                                             ssm_states_all, K, replay_buffer_size, mem_size, kv_head);
+        ggml_tensor * replay_current = ggml_get_rows(ctx0, replay, inp->s_copy_base_main);
+        ggml_tensor * state_checkpoint = build_rs(ssm_states_all, inp->s_copy_base_main, inp->s_copy_base_extra,
+                                                   hparams.n_embd_s(), n_seqs, mctx_cur->get_n_rs(), kv_head,
+                                                   mem_size, mctx_cur->get_rs_z());
+        state_checkpoint = ggml_reshape_4d(ctx0, state_checkpoint, S_v, S_v, H_v, n_seqs);
+        ggml_tensor * gdn_out = ggml_gated_delta_net_replay(ctx0, q, k, v, g, b, s, replay_current, state_copy,
+                                                             state_checkpoint, replay, K, replay_buffer_size, mem_size, kv_head);
         if (n_seq_tokens > 1) {
             res->add_fused_node({LLM_FUSED_OP_GDN_CH, gdn_out, il});
         } else {

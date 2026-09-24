@@ -6263,7 +6263,8 @@ static struct ggml_tensor * ggml_gated_delta_net_impl(
         struct ggml_tensor  * state,
         struct ggml_tensor  * replay,
         struct ggml_tensor  * state_copy,
-        struct ggml_tensor  * state_all,
+        struct ggml_tensor  * state_checkpoint,
+        struct ggml_tensor  * replay_all,
         int64_t               K,
         int64_t               replay_buffer_size,
         int64_t               mem_size,
@@ -6296,13 +6297,15 @@ static struct ggml_tensor * ggml_gated_delta_net_impl(
     GGML_ASSERT(K >= 1);
 
     if (replay != nullptr) {
-        GGML_ASSERT(state_copy != nullptr && state_all != nullptr);
+        GGML_ASSERT(state_copy != nullptr && state_checkpoint != nullptr && replay_all != nullptr);
         GGML_ASSERT(replay->type == GGML_TYPE_F32);
         GGML_ASSERT(state_copy->type == GGML_TYPE_I32);
-        GGML_ASSERT(state_all->type == GGML_TYPE_F32);
+        GGML_ASSERT(state_checkpoint->type == GGML_TYPE_F32);
+        GGML_ASSERT(replay_all->type == GGML_TYPE_F32);
         GGML_ASSERT(ggml_is_contiguous(replay));
         GGML_ASSERT(ggml_is_contiguous(state_copy));
-        GGML_ASSERT(ggml_is_contiguous(state_all));
+        GGML_ASSERT(ggml_is_contiguous(state_checkpoint));
+        GGML_ASSERT(ggml_is_contiguous(replay_all));
         GGML_ASSERT(state_copy->ne[0] == n_seqs);
         GGML_ASSERT(replay_buffer_size > 0 && (replay_buffer_size & (replay_buffer_size - 1)) == 0);
         GGML_ASSERT(mem_size > 0 && state_head >= 0 && state_head + n_seqs <= mem_size);
@@ -6326,7 +6329,8 @@ static struct ggml_tensor * ggml_gated_delta_net_impl(
     result->src[5] = state;
     result->src[6] = replay;
     result->src[7] = state_copy;
-    result->src[8] = state_all;
+    result->src[8] = state_checkpoint;
+    result->src[9] = replay_all;
 
     return result;
 }
@@ -6340,7 +6344,7 @@ struct ggml_tensor * ggml_gated_delta_net(
         struct ggml_tensor  * beta,
         struct ggml_tensor  * state,
         int64_t               K) {
-    return ggml_gated_delta_net_impl(ctx, q, k, v, g, beta, state, nullptr, nullptr, nullptr, K, 0, 0, 0);
+    return ggml_gated_delta_net_impl(ctx, q, k, v, g, beta, state, nullptr, nullptr, nullptr, nullptr, K, 0, 0, 0);
 }
 
 struct ggml_tensor * ggml_gated_delta_net_replay(
@@ -6353,12 +6357,13 @@ struct ggml_tensor * ggml_gated_delta_net_replay(
         struct ggml_tensor  * state,
         struct ggml_tensor  * replay,
         struct ggml_tensor  * state_copy,
-        struct ggml_tensor  * state_all,
+        struct ggml_tensor  * state_checkpoint,
+        struct ggml_tensor  * replay_all,
         int64_t               K,
         int64_t               replay_buffer_size,
         int64_t               mem_size,
         int64_t               state_head) {
-    return ggml_gated_delta_net_impl(ctx, q, k, v, g, beta, state, replay, state_copy, state_all,
+    return ggml_gated_delta_net_impl(ctx, q, k, v, g, beta, state, replay, state_copy, state_checkpoint, replay_all,
                                      K, replay_buffer_size, mem_size, state_head);
 }
 
