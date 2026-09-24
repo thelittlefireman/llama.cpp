@@ -117,7 +117,7 @@ llama_memory_recurrent::llama_memory_recurrent(
             const uint32_t state_dim = hparams.ssm_d_state;
             const uint32_t n_heads   = hparams.ssm_dt_rank;
             GGML_ASSERT(state_dim > 0 && n_heads > 0);
-            const uint32_t replay_head_size = 2 + gdn_replay_buffer_size * (2 * state_dim + 1);
+            const uint32_t replay_head_size = 2 + 2 * gdn_replay_buffer_size * (2 * state_dim + 1);
             ggml_tensor * replay = ggml_new_tensor_2d(ctx, GGML_TYPE_F32, n_heads * replay_head_size, mem_size);
             ggml_format_name(replay, "cache_gdn_replay_l%d", i);
             gdn_replay_l[i] = replay;
