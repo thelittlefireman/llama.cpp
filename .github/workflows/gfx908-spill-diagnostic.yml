@@ -1,4 +1,4 @@
-name: gfx908 Q4 FATTN spill diagnostic
+name: gfx908 Q4 FATTN barrier count diagnostic
 
 on:
   push:
@@ -18,46 +18,42 @@ jobs:
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: c9064dded732d81f90b34e6b33d4fbd77cbfa058
-          path: src-master
-          fetch-depth: 1
-
-      - uses: actions/checkout@v4
-        with:
           ref: de8c93244911cc8a5465540a8425500058dd10ea
-          path: src-current
+          path: src-group1
           fetch-depth: 1
 
-      - name: Create isolated variants
+      - name: Create barrier variants
         shell: bash
         run: |
           set -euxo pipefail
-          cp -a src-master src-vsub4-nobarrier
-          cp -a src-master src-master-barrier
-
+          cp -a src-group1 src-nobarrier
+          cp -a src-group1 src-group2
+          cp -a src-group1 src-group4
           python3 - <<'PY'
           from pathlib import Path
 
-          p = Path("src-vsub4-nobarrier/ggml/src/ggml-cuda/fattn-common.cuh")
-          s = p.read_text()
-          begin = s.index("static __device__ __forceinline__ void dequantize_V_q4_0")
-          end = s.index("static __device__ __forceinline__ void dequantize_V_q4_1", begin)
-          body = s[begin:end]
-          old = "q = __vsubss4(q, 0x08080808);"
-          assert body.count(old) == 1
-          body = body.replace(old, "q = __vsub4(q, 0x08080808);")
-          p.write_text(s[:begin] + body + s[end:])
+          def q4_body(path):
+              p = Path(path)
+              s = p.read_text()
+              begin = s.index("static __device__ __forceinline__ void dequantize_V_q4_0")
+              end = s.index("static __device__ __forceinline__ void dequantize_V_q4_1", begin)
+              return p, s, begin, end, s[begin:end]
 
-          p = Path("src-master-barrier/ggml/src/ggml-cuda/fattn-common.cuh")
-          s = p.read_text()
-          begin = s.index("static __device__ __forceinline__ void dequantize_V_q4_0")
-          end = s.index("static __device__ __forceinline__ void dequantize_V_q4_1", begin)
-          body = s[begin:end]
-          anchor = "    ggml_cuda_memcpy_1<ne, 2>(&q, x[ib].qs + iqs);\n"
-          assert body.count(anchor) == 1
-          barrier = chr(10).join(["#if defined(GGML_USE_HIP)", "    __builtin_amdgcn_sched_group_barrier(0x20, 1, 0);", "#endif // defined(GGML_USE_HIP)", ""])
-          body = body.replace(anchor, anchor + barrier)
-          p.write_text(s[:begin] + body + s[end:])
+          p, s, begin, end, body = q4_body("src-nobarrier/ggml/src/ggml-cuda/fattn-common.cuh")
+          lines = body.splitlines()
+          i = next(i for i, line in enumerate(lines) if "__builtin_amdgcn_sched_group_barrier" in line)
+          assert lines[i - 3].strip() == "#if defined(GGML_USE_HIP)"
+          assert lines[i + 1].strip() == "#endif // defined(GGML_USE_HIP)"
+          del lines[i - 3:i + 2]
+          p.write_text(s[:begin] + chr(10).join(lines) + chr(10) + s[end:])
+
+          for count in (2, 4):
+              p, s, begin, end, body = q4_body(f"src-group{count}/ggml/src/ggml-cuda/fattn-common.cuh")
+              old = "__builtin_amdgcn_sched_group_barrier(0x20, 1, 0);"
+              new = f"__builtin_amdgcn_sched_group_barrier(0x20, {count}, 0);"
+              assert body.count(old) == 1
+              body = body.replace(old, new)
+              p.write_text(s[:begin] + body + s[end:])
           PY
 
       - name: Dependencies
@@ -69,7 +65,7 @@ jobs:
         shell: bash
         run: |
           set -euxo pipefail
-          for variant in master vsub4-nobarrier master-barrier current; do
+          for variant in nobarrier group1 group2 group4; do
             cmake -S "src-$variant" -B "build-$variant" -G Ninja \
               -DCMAKE_HIP_COMPILER="$(hipconfig -l)/clang" \
               -DGPU_TARGETS=gfx908 \
@@ -84,49 +80,49 @@ jobs:
             ninja -C "build-$variant" "$target" -j2 2>&1 | tee "$variant.log"
           done
 
-      - name: Summarize target resources
+      - name: Summarize Q4 FATTN resources
         shell: bash
         run: |
           python3 - <<'PY'
           import re
           from pathlib import Path
 
-          sig = re.compile(r"flash_attn_ext_vecILi(256)ELi(1)EL9ggml_type2ELS0_2ELb0EE")
+          sig = re.compile(r"flash_attn_ext_vecILi(\d+)ELi(\d+)EL9ggml_type2ELS0_2ELb([01])EE")
           fields = {
               "vgpr": re.compile(r"VGPRs: (\d+)"),
+              "agpr": re.compile(r"AGPRs: (\d+)"),
               "scratch": re.compile(r"ScratchSize \[bytes/lane\]: (\d+)"),
               "occ": re.compile(r"Occupancy \[waves/SIMD\]: (\d+)"),
-              "sgpr_spill": re.compile(r"SGPRs Spill: (\d+)"),
               "vgpr_spill": re.compile(r"VGPRs Spill: (\d+)"),
           }
 
-          print("RESULT,variant,vgpr,occupancy,scratch,sgpr_spill,vgpr_spill")
-          for variant in ("master", "vsub4-nobarrier", "master-barrier", "current"):
+          print("RESULT,variant,D,ncols,softcap,vgpr,agpr,occupancy,scratch,vgpr_spill")
+          for variant in ("nobarrier", "group1", "group2", "group4"):
               lines = Path(f"{variant}.log").read_text(errors="replace").splitlines()
-              found = False
+              found = 0
               for i, line in enumerate(lines):
-                  if not sig.search(line):
+                  m = sig.search(line)
+                  if not (m and "Function Name:" in line):
                       continue
                   block = "\n".join(lines[i + 1:i + 10])
                   vals = {}
                   for name, rx in fields.items():
-                      m = rx.search(block)
-                      vals[name] = int(m.group(1)) if m else -1
-                  print(f"RESULT,{variant},{vals['vgpr']},{vals['occ']},{vals['scratch']},{vals['sgpr_spill']},{vals['vgpr_spill']}")
-                  found = True
-                  break
-              if not found:
-                  raise SystemExit(f"{variant}: target specialization not found")
+                      fm = rx.search(block)
+                      vals[name] = int(fm.group(1)) if fm else -1
+                  print(f"RESULT,{variant},{m.group(1)},{m.group(2)},{m.group(3)},{vals['vgpr']},{vals['agpr']},{vals['occ']},{vals['scratch']},{vals['vgpr_spill']}")
+                  found += 1
+              if found != 12:
+                  raise SystemExit(f"{variant}: expected 12 specializations, found {found}")
           PY
 
       - uses: actions/upload-artifact@v4
         with:
-          name: gfx908-q4-spill-diagnostic
+          name: gfx908-q4-barrier-counts
           path: |
             *.log
-            build-master/**/*.s
-            build-vsub4-nobarrier/**/*.s
-            build-master-barrier/**/*.s
-            build-current/**/*.s
+            build-nobarrier/**/*.s
+            build-group1/**/*.s
+            build-group2/**/*.s
+            build-group4/**/*.s
           compression-level: 0
           retention-days: 3
