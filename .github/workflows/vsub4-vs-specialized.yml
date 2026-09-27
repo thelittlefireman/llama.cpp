@@ -43,7 +43,7 @@ jobs:
         run: |
           set -euxo pipefail
           cp -a src-vsub4 src-vsub4-nobarrier
-          python3 -c 'from pathlib import Path; p=Path("src-vsub4-nobarrier/ggml/src/ggml-cuda/fattn-common.cuh"); s=p.read_text(); begin=s.index("static __device__ __forceinline__ void dequantize_V_q4_0"); end=s.index("static __device__ __forceinline__ void dequantize_V_q4_1", begin); body=s[begin:end]; old="#if defined(GGML_USE_HIP)\\n    // Keep this VMEM read close to its packed-byte dequantization. Hoisting it too far\\n    // increases VGPR pressure substantially in some FlashAttention vector kernels.\\n    __builtin_amdgcn_sched_group_barrier(0x20, 1, 0);\\n#endif // defined(GGML_USE_HIP)\\n"; assert body.count(old) == 1; body=body.replace(old, ""); p.write_text(s[:begin] + body + s[end:])'
+          python3 -c 'from pathlib import Path; p=Path("src-vsub4-nobarrier/ggml/src/ggml-cuda/fattn-common.cuh"); s=p.read_text(); begin=s.index("static __device__ __forceinline__ void dequantize_V_q4_0"); end=s.index("static __device__ __forceinline__ void dequantize_V_q4_1", begin); body=s[begin:end]; lines=body.splitlines(); i=next(i for i, line in enumerate(lines) if "__builtin_amdgcn_sched_group_barrier" in line); assert lines[i-3].strip()=="#if defined(GGML_USE_HIP)" and lines[i+1].strip()=="#endif // defined(GGML_USE_HIP)"; del lines[i-3:i+2]; body=chr(10).join(lines)+chr(10); p.write_text(s[:begin] + body + s[end:])'
 
       - name: Download ROCm 7.14 nightly
         shell: bash
