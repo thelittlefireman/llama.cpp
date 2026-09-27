@@ -338,8 +338,8 @@ static __device__ __forceinline__ void quantize_q8_1_to_shared(
         vals[l] = (ni == WARP_SIZE || threadIdx.x < ni) ? scale * x[4*threadIdx.x + l] : 0.0f;
     }
 
-    float amax = fmaxf(fabsf(vals[0]), fabsf(vals[1]));
-    amax = fmaxf(amax, fmaxf(fabsf(vals[2]), fabsf(vals[3])));
+    float amax = fmaxf(fmaxf(fabsf(vals[0]), fabsf(vals[1])), fabsf(vals[2]));
+    amax = fmaxf(amax, fabsf(vals[3]));
 
     float sum = vals[0];
 #pragma unroll
