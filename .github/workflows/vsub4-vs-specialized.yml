@@ -1,11 +1,10 @@
-name: vsub4 vs specialized subtraction
+name: vsub4 Q4 barrier diagnostic
 
 on:
   push:
     branches: [test-vsub4-vs-specialized]
     paths:
       - .github/workflows/vsub4-vs-specialized.yml
-      - ggml/src/ggml-cuda/fattn-common.cuh
 
 permissions:
   contents: read
@@ -20,18 +19,6 @@ jobs:
     timeout-minutes: 120
 
     steps:
-      - uses: actions/checkout@v4
-        with:
-          ref: 4b1a27fa0eb875bbca4f6cfe936e3d65adc685c0
-          path: src-master
-          fetch-depth: 1
-
-      - uses: actions/checkout@v4
-        with:
-          ref: f38abc0e25744b2c4edcd0ebd6ba4bc60f03aeaa
-          path: src-specialized
-          fetch-depth: 1
-
       - uses: actions/checkout@v4
         with:
           ref: c8caf9b535455996db3651c99618c27a886ec6b6
@@ -67,7 +54,7 @@ jobs:
         run: |
           set -euxo pipefail
           HIP_FLAGS='-O3 -ffast-math -funsafe-math-optimizations -fno-finite-math-only --save-temps=obj -Rpass-analysis=kernel-resource-usage'
-          for variant in master specialized vsub4 vsub4-nobarrier; do
+          for variant in vsub4 vsub4-nobarrier; do
             cmake -S "src-$variant" -B "build-$variant" -G Ninja \
               -DGGML_HIP=ON \
               -DAMDGPU_TARGETS=${{ matrix.arch }} \
@@ -79,7 +66,7 @@ jobs:
               -DGGML_BUILD_TESTS=OFF \
               -DGGML_BUILD_EXAMPLES=OFF \
               -DGGML_BUILD_SERVER=OFF
-            target="$(ninja -C "build-$variant" -t targets all | sed -n 's/:.*//p' | grep 'fattn-vec-instance-q4_0-q4_0.*[.]o | head -n1)"
+            target="$(ninja -C "build-$variant" -t targets all | sed -n 's/:.*//p' | grep 'fattn-vec-instance-q4_0-q4_0.*[.]o$' | head -n1)"
             test -n "$target"
             ninja -C "build-$variant" "$target" -j2 2>&1 | tee "$variant.log"
           done
@@ -101,7 +88,7 @@ jobs:
           }
 
           print("RESULT,variant,D,ncols,softcap,vgpr,occupancy,scratch,sgpr_spill,vgpr_spill")
-          for variant in ("master", "specialized", "vsub4", "vsub4-nobarrier"):
+          for variant in ("vsub4", "vsub4-nobarrier"):
               lines = Path(f"{variant}.log").read_text(errors="replace").splitlines()
               found = 0
               for i, line in enumerate(lines):
@@ -121,62 +108,9 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: vsub4-barrier-${{ matrix.arch }}
+          name: vsub4-q4-barrier-${{ matrix.arch }}
           path: |
             *.log
-            build-master/**/*.s
-            build-specialized/**/*.s
-            build-vsub4/**/*.s
-            build-vsub4-nobarrier/**/*.s
-          compression-level: 0
-          retention-days: 3
- | head -n1)"
-            test -n "$target"
-            ninja -C "build-$variant" "$target" -j2 2>&1 | tee "$variant.log"
-          done
-
-      - name: Summarize Q4 FATTN resources
-        shell: bash
-        run: |
-          python3 - <<'PY'
-          import re
-          from pathlib import Path
-
-          sig = re.compile(r"flash_attn_ext_vecILi(\d+)ELi(\d+)EL9ggml_type2ELS0_2ELb([01])EE")
-          fields = {
-              "vgpr": re.compile(r"VGPRs: (\d+)"),
-              "scratch": re.compile(r"ScratchSize \[bytes/lane\]: (\d+)"),
-              "occ": re.compile(r"Occupancy \[waves/SIMD\]: (\d+)"),
-              "sgpr_spill": re.compile(r"SGPRs Spill: (\d+)"),
-              "vgpr_spill": re.compile(r"VGPRs Spill: (\d+)"),
-          }
-
-          print("RESULT,variant,D,ncols,softcap,vgpr,occupancy,scratch,sgpr_spill,vgpr_spill")
-          for variant in ("master", "specialized", "vsub4", "vsub4-nobarrier"):
-              lines = Path(f"{variant}.log").read_text(errors="replace").splitlines()
-              found = 0
-              for i, line in enumerate(lines):
-                  m = sig.search(line)
-                  if not m:
-                      continue
-                  block = "\n".join(lines[i + 1:i + 9])
-                  vals = {}
-                  for name, rx in fields.items():
-                      fm = rx.search(block)
-                      vals[name] = int(fm.group(1)) if fm else -1
-                  print(f"RESULT,{variant},{m.group(1)},{m.group(2)},{m.group(3)},{vals['vgpr']},{vals['occ']},{vals['scratch']},{vals['sgpr_spill']},{vals['vgpr_spill']}")
-                  found += 1
-              if found != 12:
-                  raise SystemExit(f"{variant}: expected 12 Q4 FATTN specializations, found {found}")
-          PY
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: vsub4-barrier-${{ matrix.arch }}
-          path: |
-            *.log
-            build-master/**/*.s
-            build-specialized/**/*.s
             build-vsub4/**/*.s
             build-vsub4-nobarrier/**/*.s
           compression-level: 0
