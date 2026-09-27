@@ -1,0 +1,135 @@
+name: gfx908 Q4 FATTN spill diagnostic
+
+on:
+  push:
+    branches: [test-vsub4-vs-specialized]
+    paths:
+      - .github/workflows/gfx908-spill-diagnostic.yml
+
+permissions:
+  contents: read
+
+jobs:
+  gfx908:
+    runs-on: ubuntu-22.04
+    container: rocm/dev-ubuntu-22.04:7.2.1
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: c9064dded732d81f90b34e6b33d4fbd77cbfa058
+          path: src-master
+          fetch-depth: 1
+
+      - uses: actions/checkout@v4
+        with:
+          ref: de8c93244911cc8a5465540a8425500058dd10ea
+          path: src-current
+          fetch-depth: 1
+
+      - name: Create isolated variants
+        shell: bash
+        run: |
+          set -euxo pipefail
+          cp -a src-master src-vsub4-nobarrier
+          cp -a src-master src-master-barrier
+
+          python3 - <<'PY'
+          from pathlib import Path
+
+          p = Path("src-vsub4-nobarrier/ggml/src/ggml-cuda/fattn-common.cuh")
+          s = p.read_text()
+          begin = s.index("static __device__ __forceinline__ void dequantize_V_q4_0")
+          end = s.index("static __device__ __forceinline__ void dequantize_V_q4_1", begin)
+          body = s[begin:end]
+          old = "q = __vsubss4(q, 0x08080808);"
+          assert body.count(old) == 1
+          body = body.replace(old, "q = __vsub4(q, 0x08080808);")
+          p.write_text(s[:begin] + body + s[end:])
+
+          p = Path("src-master-barrier/ggml/src/ggml-cuda/fattn-common.cuh")
+          s = p.read_text()
+          begin = s.index("static __device__ __forceinline__ void dequantize_V_q4_0")
+          end = s.index("static __device__ __forceinline__ void dequantize_V_q4_1", begin)
+          body = s[begin:end]
+          anchor = "    ggml_cuda_memcpy_1<ne, 2>(&q, x[ib].qs + iqs);\n"
+          assert body.count(anchor) == 1
+          barrier = """#if defined(GGML_USE_HIP)
+    __builtin_amdgcn_sched_group_barrier(0x20, 1, 0);
+#endif // defined(GGML_USE_HIP)
+"""
+          body = body.replace(anchor, anchor + barrier)
+          p.write_text(s[:begin] + body + s[end:])
+          PY
+
+      - name: Dependencies
+        run: |
+          apt-get update
+          apt-get install -y build-essential git cmake rocblas-dev hipblas-dev libssl-dev python3 ninja-build
+
+      - name: Build variants
+        shell: bash
+        run: |
+          set -euxo pipefail
+          for variant in master vsub4-nobarrier master-barrier current; do
+            cmake -S "src-$variant" -B "build-$variant" -G Ninja \
+              -DCMAKE_HIP_COMPILER="$(hipconfig -l)/clang" \
+              -DGPU_TARGETS=gfx908 \
+              -DGGML_HIP=ON \
+              -DGGML_HIP_EXPORT_METRICS=On \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DGGML_BUILD_TESTS=OFF \
+              -DGGML_BUILD_EXAMPLES=OFF \
+              -DGGML_BUILD_SERVER=OFF
+            target="$(ninja -C "build-$variant" -t targets all | sed -n 's/:.*//p' | grep 'fattn-vec-instance-q4_0-q4_0.*[.]o$' | head -n1)"
+            test -n "$target"
+            ninja -C "build-$variant" "$target" -j2 2>&1 | tee "$variant.log"
+          done
+
+      - name: Summarize target resources
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          sig = re.compile(r"flash_attn_ext_vecILi(256)ELi(1)EL9ggml_type2ELS0_2ELb0EE")
+          fields = {
+              "vgpr": re.compile(r"VGPRs: (\d+)"),
+              "scratch": re.compile(r"ScratchSize \[bytes/lane\]: (\d+)"),
+              "occ": re.compile(r"Occupancy \[waves/SIMD\]: (\d+)"),
+              "sgpr_spill": re.compile(r"SGPRs Spill: (\d+)"),
+              "vgpr_spill": re.compile(r"VGPRs Spill: (\d+)"),
+          }
+
+          print("RESULT,variant,vgpr,occupancy,scratch,sgpr_spill,vgpr_spill")
+          for variant in ("master", "vsub4-nobarrier", "master-barrier", "current"):
+              lines = Path(f"{variant}.log").read_text(errors="replace").splitlines()
+              found = False
+              for i, line in enumerate(lines):
+                  if not sig.search(line):
+                      continue
+                  block = "\n".join(lines[i + 1:i + 10])
+                  vals = {}
+                  for name, rx in fields.items():
+                      m = rx.search(block)
+                      vals[name] = int(m.group(1)) if m else -1
+                  print(f"RESULT,{variant},{vals['vgpr']},{vals['occ']},{vals['scratch']},{vals['sgpr_spill']},{vals['vgpr_spill']}")
+                  found = True
+                  break
+              if not found:
+                  raise SystemExit(f"{variant}: target specialization not found")
+          PY
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gfx908-q4-spill-diagnostic
+          path: |
+            *.log
+            build-master/**/*.s
+            build-vsub4-nobarrier/**/*.s
+            build-master-barrier/**/*.s
+            build-current/**/*.s
+          compression-level: 0
+          retention-days: 3
