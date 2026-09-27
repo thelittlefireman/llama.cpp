@@ -63,7 +63,27 @@ jobs:
           set -euxo pipefail
           HIP_FLAGS='-O3 -ffast-math -funsafe-math-optimizations -fno-finite-math-only --save-temps=obj -Rpass-analysis=kernel-resource-usage'
 
-          for variant in master specialized vsub4; do
+          rm -rf src-vsub4-nobarrier
+          cp -a src-vsub4 src-vsub4-nobarrier
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path("src-vsub4-nobarrier/ggml/src/ggml-cuda/fattn-common.cuh")
+          s = p.read_text()
+          begin = s.index("static __device__ __forceinline__ void dequantize_V_q4_0")
+          end = s.index("static __device__ __forceinline__ void dequantize_V_q4_1", begin)
+          body = s[begin:end]
+          barrier = """#if defined(GGML_USE_HIP)
+    // Keep this VMEM read close to its packed-byte dequantization. Hoisting it too far
+    // increases VGPR pressure substantially in some FlashAttention vector kernels.
+    __builtin_amdgcn_sched_group_barrier(0x20, 1, 0);
+#endif // defined(GGML_USE_HIP)
+"""
+          assert body.count(barrier) == 1
+          body = body.replace(barrier, "")
+          p.write_text(s[:begin] + body + s[end:])
+          PY
+
+          for variant in master specialized vsub4 vsub4-nobarrier; do
             cmake -S "src-$variant" -B "build-$variant" -G Ninja \
               -DGGML_HIP=ON \
               -DAMDGPU_TARGETS=${{ matrix.arch }} \
@@ -111,7 +131,7 @@ jobs:
           }
 
           print("RESULT,variant,D,ncols,softcap,vgpr,occupancy,scratch,sgpr_spill,vgpr_spill")
-          for variant in ("master", "specialized", "vsub4"):
+          for variant in ("master", "specialized", "vsub4", "vsub4-nobarrier"):
               lines = Path(f"{variant}.log").read_text(errors="replace").splitlines()
               found = 0
               for i, line in enumerate(lines):
@@ -136,7 +156,7 @@ jobs:
       - name: Summarize hot-kernel resource reports
         shell: bash
         run: |
-          for variant in master specialized vsub4; do
+          for variant in master specialized vsub4 vsub4-nobarrier; do
             echo "===== $variant ====="
             grep -E 'Function Name:|TotalSGPRs:|VGPRs:|ScratchSize|Occupancy|SGPRs Spill|VGPRs Spill' "$variant.log" > "$variant-resources.txt"
             wc -l "$variant-resources.txt"
