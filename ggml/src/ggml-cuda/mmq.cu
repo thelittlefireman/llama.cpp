@@ -302,7 +302,7 @@ void ggml_cuda_mul_mat_q(
     if (GGML_CUDA_CC_IS_RDNA3(cc) || GGML_CUDA_CC_IS_RDNA4(cc)) {
         ncols_opt = (ne12*n_expert_used + ne02 - 1) / ne02;
     } else if (GGML_CUDA_CC_IS_GCN(cc)) {
-        ncols_opt = std::min((4*ne12*n_expert_used + 3*ne02 - 1) / (3*ne02), (int64_t)64);
+        ncols_opt = std::min((ne12*n_expert_used + ne02 - 1) / ne02, (int64_t)64);
     }
 
     // Note that ne02 is used instead of ne12 because the number of y channels determines the z dimension of the CUDA grid.
