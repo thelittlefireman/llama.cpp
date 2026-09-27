@@ -55,10 +55,7 @@ jobs:
           body = s[begin:end]
           anchor = "    ggml_cuda_memcpy_1<ne, 2>(&q, x[ib].qs + iqs);\n"
           assert body.count(anchor) == 1
-          barrier = """#if defined(GGML_USE_HIP)
-    __builtin_amdgcn_sched_group_barrier(0x20, 1, 0);
-#endif // defined(GGML_USE_HIP)
-"""
+          barrier = chr(10).join(["#if defined(GGML_USE_HIP)", "    __builtin_amdgcn_sched_group_barrier(0x20, 1, 0);", "#endif // defined(GGML_USE_HIP)", ""])
           body = body.replace(anchor, anchor + barrier)
           p.write_text(s[:begin] + body + s[end:])
           PY
