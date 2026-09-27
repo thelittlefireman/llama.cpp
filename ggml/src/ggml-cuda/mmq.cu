@@ -303,6 +303,23 @@ void ggml_cuda_mul_mat_q(
         ncols_opt = (ne12*n_expert_used + ne02 - 1) / ne02;
     } else if (GGML_CUDA_CC_IS_GCN(cc)) {
         ncols_opt = std::min((4*ne12*n_expert_used + 3*ne02 - 1) / (3*ne02), (int64_t)64);
+
+        // Diagnostic override: 0 selects the baseline, positive values set the target width.
+        static const int ncols_override = []() {
+            const char * value = getenv("GGML_CUDA_MMQ_MOE_NCOLS");
+            if (!value) {
+                return -1;
+            }
+            char * end = nullptr;
+            const long ncols = strtol(value, &end, 10);
+            if (end == value || *end != '\0' || ncols < 0 || ncols > 128 || ncols % 8 != 0) {
+                GGML_ABORT("GGML_CUDA_MMQ_MOE_NCOLS must be 0 or a multiple of 8 from 8 to 128");
+            }
+            return (int) ncols;
+        }();
+        if (ncols_override >= 0) {
+            ncols_opt = ncols_override == 0 ? ne12 : ncols_override;
+        }
     }
 
     // Note that ne02 is used instead of ne12 because the number of y channels determines the z dimension of the CUDA grid.

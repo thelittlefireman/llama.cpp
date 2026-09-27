@@ -5271,6 +5271,55 @@ struct test_mul_mat_id : public test_case {
     }
 };
 
+// Compare MMQ tiles with dispersed and concentrated expert routing.
+struct test_mul_mat_id_mmq : public test_mul_mat_id {
+    const bool concentrated;
+    std::mt19937 rng{1234};
+
+    test_mul_mat_id_mmq(ggml_type type_a, int n_mats, bool b, int64_t m, int64_t n, int64_t k, bool concentrated)
+        : test_mul_mat_id(type_a, GGML_TYPE_F32, n_mats, 8, b, m, n, k), concentrated(concentrated) {}
+
+    std::string vars() override {
+        return "mmq_moe=1," + test_mul_mat_id::vars() + ",concentrated=" + std::to_string(concentrated);
+    }
+
+    void reinit_perf_iter(ggml_context * ctx) override {
+        ggml_tensor * ids = ggml_get_tensor(ctx, "ids");
+        GGML_ASSERT(ids && ids->ne[0] == n_mats);
+        std::vector<int32_t> data(n_mats);
+        for (int64_t r = 0; r < ggml_nrows(ids); r++) {
+            for (int i = 0; i < n_mats; i++) {
+                data[i] = i;
+            }
+            if (!concentrated) {
+                std::shuffle(data.begin(), data.end(), rng);
+            }
+            ggml_backend_tensor_set(ids, data.data(), r * ids->nb[1], n_mats * sizeof(int32_t));
+        }
+    }
+
+    void initialize_tensors(ggml_context * ctx) override {
+        test_mul_mat_id::initialize_tensors(ctx);
+        reinit_perf_iter(ctx);
+    }
+};
+
+static void add_mmq_moe_test_cases(std::vector<std::unique_ptr<test_case>> & test_cases) {
+    for (bool concentrated : {false, true}) {
+        for (int n : {32, 128}) {
+            for (ggml_type type : {GGML_TYPE_Q8_0, GGML_TYPE_IQ4_XS}) {
+                test_cases.emplace_back(new test_mul_mat_id_mmq(type, 40, true, 512, n, 1536, concentrated));
+                test_cases.emplace_back(new test_mul_mat_id_mmq(type, 40, false, 1536, n, 512, concentrated));
+            }
+        }
+        for (int n : {64, 128}) {
+            test_cases.emplace_back(new test_mul_mat_id_mmq(GGML_TYPE_Q4_K, 256, true, 512, n, 2048, concentrated));
+            test_cases.emplace_back(new test_mul_mat_id_mmq(GGML_TYPE_Q4_K, 256, true, 1024, n, 2048, concentrated));
+            test_cases.emplace_back(new test_mul_mat_id_mmq(GGML_TYPE_Q4_K, 256, false, 2048, n, 512, concentrated));
+        }
+    }
+}
+
 // FP4 W4A8 path on the MoE path (GGML_PREC_Q8 on src1 disallows 4-bit activations)
 struct test_mul_mat_id_w4a8 : public test_mul_mat_id {
     test_mul_mat_id_w4a8(ggml_type type_a = GGML_TYPE_NVFP4, ggml_type type_b = GGML_TYPE_F32,
@@ -9102,6 +9151,8 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     std::vector<std::unique_ptr<test_case>> test_cases;
     std::default_random_engine rng(0);
 
+    add_mmq_moe_test_cases(test_cases);
+
     // unary ops
     for (ggml_type type : {GGML_TYPE_F16, GGML_TYPE_F32}) {
         for (int v : {0, 1}) {
@@ -11250,6 +11301,8 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
 // Test cases for performance evaluation: should be representative of real-world use cases
 static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
     std::vector<std::unique_ptr<test_case>> test_cases;
+
+    add_mmq_moe_test_cases(test_cases);
 
     // SWIGLU at a 27B-class FFN width, fused [gate|up] vs split operands
     // note: same bytes either way, so a backend that indexes them differently shows it here

@@ -1509,6 +1509,20 @@ void mul_mat_q_switch_J(ggml_backend_cuda_context & ctx, const mmq_args & args, 
         }
     }
 
+    static const bool trace = getenv("GGML_CUDA_MMQ_MOE_TRACE") != nullptr && atoi(getenv("GGML_CUDA_MMQ_MOE_TRACE")) != 0;
+    if (trace && args.ids_dst && GGML_CUDA_CC_IS_GCN(cc)) {
+        const std::array<int64_t, 8> key = {id, args.nrows_x, args.ncols_x, args.ncols_max, args.nchannels_x, args.ncols_dst, args.ncols_opt, J_best};
+        static thread_local std::vector<std::array<int64_t, 8>> seen;
+        if (seen.size() < 256 && std::find(seen.begin(), seen.end(), key) == seen.end()) {
+            seen.push_back(key);
+            const ggml_cuda_mmq_config config = ggml_cuda_mmq_get_config(type, J_best, fallback, cc, prec_src1);
+            GGML_LOG_INFO("mmq-moe: device=%d type=%s M=%lld K=%lld T=%lld E=%lld used=%lld target=%lld I=%d J=%d threads=%d shared=%zu fallback=%d\n",
+                id, ggml_type_name(type), (long long) args.nrows_x, (long long) args.ncols_x, (long long) args.ncols_max,
+                (long long) args.nchannels_x, (long long) (args.ncols_dst / args.ncols_max), (long long) args.ncols_opt,
+                config.I, config.J, config.nthreads, mmq_get_nbytes_shared(config, cc), (int) fallback);
+        }
+    }
+
     switch (J_best) {
         case   8:
             launch_mul_mat_q<type,   8, fallback, prec_src1>(ctx, args, stream);
