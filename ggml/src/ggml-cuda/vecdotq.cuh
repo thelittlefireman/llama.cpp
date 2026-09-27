@@ -113,6 +113,17 @@ static __device__ __forceinline__ int apply_iq_signs_i8x4(const int values, cons
 #endif // defined(GGML_USE_HIP)
 }
 
+static __device__ __forceinline__ int apply_iq_signs_i8x4_perm(const int values, const uint8_t signs) {
+#if defined(GGML_USE_HIP)
+    // IQ2/IQ3 grid bytes are nonzero, so packed two's complement cannot carry between bytes.
+    const uint32_t selectors = 0x03020100u | (((uint32_t) signs * 0x00810204u) & 0x04040404u);
+    const uint32_t neg = (~(uint32_t) values) + 0x01010101u;
+    return (int) __builtin_amdgcn_perm(neg, (uint32_t) values, selectors);
+#else
+    return apply_iq_signs_i8x4(values, signs);
+#endif // defined(GGML_USE_HIP)
+}
+
 // VDR = vec dot ratio, how many contiguous integers each thread processes when the vec dot kernel is called
 // MMVQ = mul_mat_vec_q, MMQ = mul_mat_q
 
@@ -1069,11 +1080,11 @@ static __device__ __forceinline__ float vec_dot_iq2_xxs_q8_1(
     for (int k0 = 0; k0 < 8; k0 += 2) {
         const uint2 grid_pos = ((const uint2*)iq2xxs_grid)[aux8[k0/2]];
         const uint8_t signs = unpack_ksigns(aux32 >> (7 * k0 / 2));
-        const int grid0 = apply_iq_signs_i8x4(grid_pos.x, signs & 0x0F);
+        const int grid0 = apply_iq_signs_i8x4_perm(grid_pos.x, signs & 0x0F);
         const int u0 = get_int_b4(bq8_1[iqs/2].qs, k0 + 0);
         sumi = ggml_cuda_dp4a(grid0, u0, sumi);
 
-        const int grid1 = apply_iq_signs_i8x4(grid_pos.y, signs >> 4);
+        const int grid1 = apply_iq_signs_i8x4_perm(grid_pos.y, signs >> 4);
         const int u1 = get_int_b4(bq8_1[iqs/2].qs, k0 + 1);
         sumi = ggml_cuda_dp4a(grid1, u1, sumi);
     }
@@ -1103,10 +1114,10 @@ static __device__ __forceinline__ float vec_dot_iq2_xs_q8_1(
     for (int l0 = 0; l0 < 8; l0 += 2) {
         const uint2 grid_pos = ((const uint2*)iq2xs_grid)[q2[l0/2] & 0x1FF];
         const uint8_t signs = unpack_ksigns(q2[l0/2] >> 9);
-        const int grid_l = apply_iq_signs_i8x4(grid_pos.x, signs & 0x0F);
+        const int grid_l = apply_iq_signs_i8x4_perm(grid_pos.x, signs & 0x0F);
         const int u0 = get_int_b4(bq8_1[iqs/2].qs, l0 + 0);
 
-        const int grid_h = apply_iq_signs_i8x4(grid_pos.y, signs >> 4);
+        const int grid_h = apply_iq_signs_i8x4_perm(grid_pos.y, signs >> 4);
         const int u1 = get_int_b4(bq8_1[iqs/2].qs, l0 + 1);
 
         if (l0 < 4) {
@@ -1148,8 +1159,8 @@ static __device__ __forceinline__ float vec_dot_iq2_s_q8_1(
         const int * grid_pos = (const int *)(iq2s_grid + (qs[l0/2] | ((qh << (8-l0)) & 0x300)));
         const uint8_t signs = signs_packed_8[l0/2];
 
-        const int grid_l = apply_iq_signs_i8x4(grid_pos[0], signs & 0x0F);
-        const int grid_h = apply_iq_signs_i8x4(grid_pos[1], signs >> 4);
+        const int grid_l = apply_iq_signs_i8x4_perm(grid_pos[0], signs & 0x0F);
+        const int grid_h = apply_iq_signs_i8x4_perm(grid_pos[1], signs >> 4);
 
         const int u0 = get_int_b4(bq8_1[iqs/2].qs, l0 + 0);
         const int u1 = get_int_b4(bq8_1[iqs/2].qs, l0 + 1);
@@ -1185,11 +1196,11 @@ static __device__ __forceinline__ float vec_dot_iq3_xxs_q8_1(
     for (int l0 = 0; l0 < 8; l0 += 2) {
         const int2 grid_pos = make_int2(iq3xxs_grid[q3[l0 + 0]], iq3xxs_grid[q3[l0 + 1]]);
         const uint8_t signs = unpack_ksigns(aux32 >> (7*l0/2));
-        const int grid_l = apply_iq_signs_i8x4(grid_pos.x, signs & 0x0F);
+        const int grid_l = apply_iq_signs_i8x4_perm(grid_pos.x, signs & 0x0F);
 
         const int u0 = get_int_b4(bq8_1[iqs/2].qs, l0 + 0);
 
-        const int grid_h = apply_iq_signs_i8x4(grid_pos.y, signs >> 4);
+        const int grid_h = apply_iq_signs_i8x4_perm(grid_pos.y, signs >> 4);
 
         const int u1 = get_int_b4(bq8_1[iqs/2].qs, l0 + 1);
 
@@ -1228,8 +1239,8 @@ static __device__ __forceinline__ float vec_dot_iq3_s_q8_1(
             iq3s_grid[qs[l0 + 1] | ((qh << (7 - l0)) & 0x100)]);
         const uint8_t signs = signs_packed_8[l0/2];
 
-        const int grid_l = apply_iq_signs_i8x4(grid_pos.x, signs & 0x0F);
-        const int grid_h = apply_iq_signs_i8x4(grid_pos.y, signs >> 4);
+        const int grid_l = apply_iq_signs_i8x4_perm(grid_pos.x, signs & 0x0F);
+        const int grid_h = apply_iq_signs_i8x4_perm(grid_pos.y, signs >> 4);
 
         const int u0 = get_int_b4(bq8_1[iqs/2].qs, l0 + 0);
         const int u1 = get_int_b4(bq8_1[iqs/2].qs, l0 + 1);
