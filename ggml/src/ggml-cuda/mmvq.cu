@@ -577,9 +577,6 @@ static constexpr __host__ __device__ int calc_nwarps(ggml_type type, int ncols_d
 }
 
 static constexpr __host__ __device__ int calc_rows_per_block(int ncols_dst, int table_id, bool small_k = false, int nwarps = 1) {
-    if (table_id == MMVQ_PARAMETERS_GCN && ncols_dst == 3) {
-        return 1;
-    }
     if (table_id == MMVQ_PARAMETERS_GENERIC || table_id == MMVQ_PARAMETERS_GCN || table_id == MMVQ_PARAMETERS_TURING || table_id == MMVQ_PARAMETERS_GB10) {
         switch (ncols_dst) {
             case 1:
@@ -747,10 +744,21 @@ static __global__ void mul_mat_vec_q(
             for (int i = 0; i < rows_per_cuda_block; ++i) {
                 tmp[j][i] += vec_dot_q_cuda(
                     vx, &y[j*stride_col_y + kby], kbx_offset + i*stride_row_x + kbx, kqs);
+#if defined(GGML_USE_HIP)
+                if constexpr (table_id == MMVQ_PARAMETERS_GCN && ncols_dst == 3) {
+                    // Keep adjacent unrolled dot products from being interleaved while testing GCN scheduling.
+                    __builtin_amdgcn_sched_barrier(0);
+                }
+#endif // defined(GGML_USE_HIP)
                 if constexpr (has_fusion) {
                     if (use_gate) {
                         tmp_gate[j][i] += vec_dot_q_cuda(
                             vgate, &y[j*stride_col_y + kby], kbx_offset + i*stride_row_x + kbx, kqs);
+#if defined(GGML_USE_HIP)
+                        if constexpr (table_id == MMVQ_PARAMETERS_GCN && ncols_dst == 3) {
+                            __builtin_amdgcn_sched_barrier(0);
+                        }
+#endif // defined(GGML_USE_HIP)
                     }
                 }
             }
