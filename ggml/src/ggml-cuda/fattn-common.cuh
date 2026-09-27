@@ -423,7 +423,7 @@ static __device__ __forceinline__ void dequantize_V_q4_0(const void * __restrict
 #endif // defined(GGML_USE_HIP)
     q >>= 4*shift;
     q &= 0x0F0F0F0F;
-    q = ggml_cuda_vsubss4_nonnegative(q, 0x08080808);
+    q = __vsub4(q, 0x08080808);
 
     const int8_t * q8 = (const int8_t *) &q;
 
@@ -513,7 +513,7 @@ static __device__ __forceinline__ void dequantize_V_q5_0(const void * __restrict
         }
     }
 
-    q = ggml_cuda_vsubss4_nonnegative(q, 0x10101010);
+    q = __vsub4(q, 0x10101010);
 
     const int8_t * q8 = (const int8_t *) &q;
 
