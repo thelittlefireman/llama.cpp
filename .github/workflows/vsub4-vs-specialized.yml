@@ -1,0 +1,155 @@
+name: vsub4 vs specialized subtraction
+
+on:
+  push:
+    branches: [test-vsub4-vs-specialized]
+    paths:
+      - .github/workflows/vsub4-vs-specialized.yml
+      - ggml/src/ggml-cuda/fattn-common.cuh
+      - ggml/src/ggml-cuda/mmq-load-tiles.cuh
+      - ggml/src/ggml-cuda/vecdotq.cuh
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [gfx906, gfx1152]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: 4b1a27fa0eb875bbca4f6cfe936e3d65adc685c0
+          path: src-master
+          fetch-depth: 1
+
+      - uses: actions/checkout@v4
+        with:
+          ref: f38abc0e25744b2c4edcd0ebd6ba4bc60f03aeaa
+          path: src-specialized
+          fetch-depth: 1
+
+      - uses: actions/checkout@v4
+        with:
+          ref: test-vsub4-vs-specialized
+          path: src-vsub4
+          fetch-depth: 1
+
+      - name: Download ROCm 7.14 nightly
+        shell: bash
+        run: |
+          set -euxo pipefail
+          tarball="therock-dist-linux-${{ matrix.arch }}-7.14.0a20260624.tar.gz"
+          mkdir -p "$RUNNER_TEMP/rocm-nightly"
+          curl -fL --retry 5 --retry-all-errors "https://rocm.nightlies.amd.com/tarball-multi-arch/$tarball" -o "$RUNNER_TEMP/rocm-nightly.tar.gz"
+          tar -xzf "$RUNNER_TEMP/rocm-nightly.tar.gz" -C "$RUNNER_TEMP/rocm-nightly"
+          hipcc="$(find "$RUNNER_TEMP/rocm-nightly" -type f -name hipcc -perm -u+x | head -n1)"
+          rocm_root="$(cd "$(dirname "$hipcc")/.." && pwd)"
+          echo "ROCM_ROOT=$rocm_root" >> "$GITHUB_ENV"
+          echo "$rocm_root/bin" >> "$GITHUB_PATH"
+          echo "$rocm_root/lib/llvm/bin" >> "$GITHUB_PATH"
+          echo "LD_LIBRARY_PATH=$rocm_root/lib:$rocm_root/lib64:$rocm_root/lib/llvm/lib:${LD_LIBRARY_PATH:-}" >> "$GITHUB_ENV"
+          echo "CMAKE_PREFIX_PATH=$rocm_root" >> "$GITHUB_ENV"
+          "$rocm_root/lib/llvm/bin/clang++" --version
+
+      - name: Build hot translation units
+        shell: bash
+        run: |
+          set -euxo pipefail
+          HIP_FLAGS='-O3 -ffast-math -funsafe-math-optimizations -fno-finite-math-only --save-temps=obj -Rpass-analysis=kernel-resource-usage'
+
+          for variant in master specialized vsub4; do
+            cmake -S "src-$variant" -B "build-$variant" -G Ninja \
+              -DGGML_HIP=ON \
+              -DAMDGPU_TARGETS=${{ matrix.arch }} \
+              -DCMAKE_BUILD_TYPE=Release \
+              -DCMAKE_HIP_COMPILER="$ROCM_ROOT/lib/llvm/bin/clang++" \
+              -DCMAKE_HIP_FLAGS="$HIP_FLAGS" \
+              -DCMAKE_PREFIX_PATH="$ROCM_ROOT" \
+              -DGGML_NATIVE=OFF \
+              -DGGML_BUILD_TESTS=OFF \
+              -DGGML_BUILD_EXAMPLES=OFF \
+              -DGGML_BUILD_SERVER=OFF
+
+            targets="$(ninja -C "build-$variant" -t targets all | sed -n 's/:.*//p')"
+            selected=()
+            for pattern in \
+              'mmq-instance-q3_k.*\.o$' \
+              'mmq-instance-q5_0.*\.o$' \
+              'mmq-instance-q6_k.*\.o$' \
+              '/mmvq\.cu\.o$' \
+              'fattn-vec-instance-q4_0-q4_0.*\.o$'; do
+              target="$(printf '%s\n' "$targets" | grep -E "$pattern" | head -n1)"
+              test -n "$target"
+              selected+=("$target")
+            done
+
+            printf 'Selected targets for %s:\n' "$variant"
+            printf '  %s\n' "${selected[@]}"
+            ninja -C "build-$variant" "${selected[@]}" -j2 2>&1 | tee "$variant.log"
+          done
+
+      - name: Summarize Q4 FATTN resources
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import re
+          from pathlib import Path
+
+          sig = re.compile(r"flash_attn_ext_vecILi(\d+)ELi(\d+)EL9ggml_type2ELS0_2ELb([01])EE")
+          fields = {
+              "vgpr": re.compile(r"VGPRs: (\d+)"),
+              "scratch": re.compile(r"ScratchSize \[bytes/lane\]: (\d+)"),
+              "occ": re.compile(r"Occupancy \[waves/SIMD\]: (\d+)"),
+              "sgpr_spill": re.compile(r"SGPRs Spill: (\d+)"),
+              "vgpr_spill": re.compile(r"VGPRs Spill: (\d+)"),
+          }
+
+          print("RESULT,variant,D,ncols,softcap,vgpr,occupancy,scratch,sgpr_spill,vgpr_spill")
+          for variant in ("master", "specialized", "vsub4"):
+              lines = Path(f"{variant}.log").read_text(errors="replace").splitlines()
+              found = 0
+              for i, line in enumerate(lines):
+                  m = sig.search(line)
+                  if not m:
+                      continue
+                  block = "\n".join(lines[i + 1:i + 9])
+                  vals = {}
+                  for name, rx in fields.items():
+                      fm = rx.search(block)
+                      vals[name] = int(fm.group(1)) if fm else -1
+                  print(
+                      f"RESULT,{variant},{m.group(1)},{m.group(2)},{m.group(3)},"
+                      f"{vals['vgpr']},{vals['occ']},{vals['scratch']},"
+                      f"{vals['sgpr_spill']},{vals['vgpr_spill']}"
+                  )
+                  found += 1
+              if found != 12:
+                  raise SystemExit(f"{variant}: expected 12 Q4 FATTN specializations, found {found}")
+          PY
+
+      - name: Summarize hot-kernel resource reports
+        shell: bash
+        run: |
+          for variant in master specialized vsub4; do
+            echo "===== $variant ====="
+            grep -E 'Function Name:|TotalSGPRs:|VGPRs:|ScratchSize|Occupancy|SGPRs Spill|VGPRs Spill' "$variant.log" > "$variant-resources.txt"
+            wc -l "$variant-resources.txt"
+          done
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vsub4-vs-specialized-${{ matrix.arch }}
+          path: |
+            *.log
+            *-resources.txt
+            build-master/**/*.s
+            build-specialized/**/*.s
+            build-vsub4/**/*.s
+          compression-level: 0
+          retention-days: 3
