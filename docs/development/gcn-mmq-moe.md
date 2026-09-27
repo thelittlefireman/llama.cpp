@@ -23,8 +23,8 @@ No GPU synchronization, timing, routing readback or runtime calibration is added
 
 Reconfigure the existing HIP build so its ROCm settings are retained:
 
-    cmake -S . -B build-feature_GCN_MOE_MMQ_TILES -DLLAMA_BUILD_TESTS=ON
-    cmake --build build-feature_GCN_MOE_MMQ_TILES --target test-backend-ops llama-bench -j 8
+    cmake -S . -B build-feature_GCN_MOE_MMQ_DIAGNOSTICS -DLLAMA_BUILD_TESTS=ON
+    cmake --build build-feature_GCN_MOE_MMQ_DIAGNOSTICS --target test-backend-ops llama-bench -j 8
 
     HIP_VISIBLE_DEVICES=0 python3 scripts/bench-gcn-mmq-moe.py --mode test --out mmq-correctness
     HIP_VISIBLE_DEVICES=0 python3 scripts/bench-gcn-mmq-moe.py --mode perf --out mmq-performance

@@ -15,7 +15,7 @@ import sys
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--build", default="build-feature_GCN_MOE_MMQ_TILES")
+    parser.add_argument("--build", default="build-feature_GCN_MOE_MMQ_DIAGNOSTICS")
     parser.add_argument("--backend", default="ROCm0")
     parser.add_argument("--mode", choices=("test", "perf"), default="perf")
     parser.add_argument("--runs", type=int, default=3)
