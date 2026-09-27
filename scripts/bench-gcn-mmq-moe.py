@@ -10,6 +10,7 @@ import random
 import re
 import statistics
 import subprocess
+import sys
 
 
 def main():
@@ -32,6 +33,7 @@ def main():
     binary = (Path(args.build) / "bin/test-backend-ops").resolve()
     if not binary.is_file():
         parser.error(f"missing binary: {binary}")
+    print(f"Runner: {binary} (backend: {args.backend})", flush=True)
     out = Path(args.out or f"mmq-moe-{args.mode}")
     out.mkdir(parents=True, exist_ok=False)
     command = [str(binary), args.mode, "-b", args.backend, "-o", "MUL_MAT_ID", "-p", args.params]
@@ -64,33 +66,44 @@ def main():
                 with stem.with_suffix(".log").open("w") as stderr:
                     result = subprocess.run(command, env=env, stdout=subprocess.PIPE, stderr=stderr, text=True)
                 stem.with_suffix(".txt").write_text(result.stdout)
+                stderr_text = stem.with_suffix(".log").read_text()
+
+                def fail(message):
+                    print(f"Runner: {binary}", file=sys.stderr)
+                    for label, contents in (("stdout", result.stdout), ("stderr", stderr_text)):
+                        print(f"--- {label} (last 40 lines) ---", file=sys.stderr)
+                        print("\n".join(contents.splitlines()[-40:]), file=sys.stderr)
+                    raise SystemExit(f"{message}; full output: {stem}.txt and {stem}.log")
+
                 if result.returncode:
-                    raise SystemExit(f"test runner failed ({result.returncode}); see {stem}.log and {stem}.txt")
-                if "mmq-moe:" not in stem.with_suffix(".log").read_text():
-                    raise SystemExit(f"no GCN MoE MMQ trace; check the build, backend and filter: {stem}.log")
+                    fail(f"test runner failed ({result.returncode})")
                 output = ansi.sub("", result.stdout)
+                if "MUL_MAT_ID(mmq_moe=1," not in output:
+                    fail("no diagnostic cases executed: check --build, --backend and --params; rebuild test-backend-ops from feature_GCN_MOE_MMQ_DIAGNOSTICS")
                 if "not supported" in output or "skipping large tensors" in output:
-                    raise SystemExit(f"some cases were skipped; see {stem}.txt")
+                    fail("some cases were skipped")
+                if "mmq-moe:" not in result.stdout + stderr_text:
+                    fail("diagnostic cases ran without a GCN MoE MMQ trace: check the GPU, rebuild the HIP backend and check which backend library is loaded")
                 if args.mode == "perf":
                     matches = perf_pattern.findall(output)
                     cases = {case for case, _ in matches}
                     if len(cases) != len(matches):
-                        raise SystemExit(f"duplicate cases in {stem}.txt")
+                        fail("duplicate cases")
                     for case, time_us in matches:
                         time_us = float(time_us)
                         if time_us <= 0:
-                            raise SystemExit(f"invalid timing in {stem}.txt")
+                            fail("invalid timing")
                         writer.writerow([repeat, width, case, time_us])
                         samples.setdefault(case, {}).setdefault(width, []).append(time_us)
                     sample_file.flush()
                 else:
                     cases = set(test_pattern.findall(output))
                 if not cases:
-                    raise SystemExit(f"no measured/passed cases in {stem}.txt")
+                    fail("no measured/passed cases")
                 if expected_cases is None:
                     expected_cases = cases
                 elif cases != expected_cases:
-                    raise SystemExit(f"case set changed in {stem}.txt")
+                    fail("case set changed")
 
     if args.mode == "perf":
         with (out / "summary.csv").open("w", newline="") as summary_file:
