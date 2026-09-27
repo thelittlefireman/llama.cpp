@@ -38,7 +38,7 @@ def main():
     out.mkdir(parents=True, exist_ok=False)
     command = [str(binary), args.mode, "-b", args.backend, "-o", "MUL_MAT_ID", "-p", args.params]
     metadata = {"args": vars(args), "command": command, "env": {
-        k: os.environ[k] for k in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "GGML_CUDA_DISABLE_GRAPHS", "GGML_CUDA_GRAPH_OPT") if k in os.environ
+        k: os.environ[k] for k in ("HIP_VISIBLE_DEVICES", "ROCR_VISIBLE_DEVICES", "GGML_CUDA_DISABLE_GRAPHS", "GGML_CUDA_GRAPH_OPT", "GGML_CUDA_MMQ_MOE_ROUTED") if k in os.environ
     }}
     (out / "run.json").write_text(json.dumps(metadata, indent=2) + "\n")
 
@@ -79,7 +79,7 @@ def main():
                     fail(f"test runner failed ({result.returncode})")
                 output = ansi.sub("", result.stdout)
                 if "MUL_MAT_ID(mmq_moe=1," not in output:
-                    fail("no diagnostic cases executed: check --build, --backend and --params; rebuild test-backend-ops from feature_GCN_MOE_MMQ_DIAGNOSTICS")
+                    fail("no diagnostic cases executed: check --build, --backend and --params; rebuild test-backend-ops from the diagnostic or routed branch")
                 if "not supported" in output or "skipping large tensors" in output:
                     fail("some cases were skipped")
                 if "mmq-moe:" not in result.stdout + stderr_text:

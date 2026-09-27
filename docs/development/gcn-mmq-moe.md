@@ -1,6 +1,6 @@
 # GCN MoE MMQ tile diagnostics
 
-This branch measures the tile-selection problem. It does not claim to fix the regressions or change the default 4/3 policy.
+This document describes the original diagnostic policy. On `feature_GCN_MOE_MMQ_ROUTED`, see [the routed-dispatch experiment](gcn-mmq-moe-routed.md) for the new default and validation commands. Set `GGML_CUDA_MMQ_MOE_ROUTED=0` to reproduce the 4/3 policy described here.
 
 The current selector minimizes ceil(ncols_opt / J). A candidate also changes I, thread count, shared memory use and register use. Average tokens per expert alone cannot describe those costs or an uneven routing distribution.
 
@@ -10,7 +10,7 @@ The reported MI50 results include a Q8_0 regression at ubatch 32 (871.27 to 640.
 
 Both controls apply only to GCN MoE MMQ.
 
-- GGML_CUDA_MMQ_MOE_NCOLS unset: existing 4/3 policy.
+- GGML_CUDA_MMQ_MOE_NCOLS unset, GGML_CUDA_MMQ_MOE_ROUTED=0: existing 4/3 policy.
 - GGML_CUDA_MMQ_MOE_NCOLS=0: baseline selection using the full token count.
 - GGML_CUDA_MMQ_MOE_NCOLS=8..128, multiples of 8: set the target width.
 - GGML_CUDA_MMQ_MOE_TRACE=1: report the actual configuration once per shape and template instance, up to 256 shapes per thread.

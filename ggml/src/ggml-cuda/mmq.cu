@@ -323,13 +323,41 @@ void ggml_cuda_mul_mat_q(
     }
 
     // Note that ne02 is used instead of ne12 because the number of y channels determines the z dimension of the CUDA grid.
-    const mmq_args args = {
+    mmq_args args = {
         src0_d, src0->type, (const int *) src1_q8_1.get(), ids_dst.get(), expert_bounds.get(), dst_d,
         src1_scale.ptr,
         ne00, ne01, ne_get_rows, s01, ne_get_rows, s1,
         ne02, ne02, s02, s12, s2,
         ne03, ne13, s03, s13, s3,
         ne12, ncols_opt};
+
+    static const bool routed_moe = getenv("GGML_CUDA_MMQ_MOE_ROUTED") == nullptr || atoi(getenv("GGML_CUDA_MMQ_MOE_ROUTED")) != 0;
+    if (GGML_CUDA_CC_IS_GCN(cc) && routed_moe && getenv("GGML_CUDA_MMQ_MOE_NCOLS") == nullptr) {
+        const size_t smpbo = ggml_cuda_info().devices[ggml_cuda_get_device()].smpbo;
+        std::array<int, 4> widths;
+        int nwidths = 0;
+        for (int J : {8, 32, 64, 128}) {
+            const ggml_cuda_mmq_config config = ggml_cuda_mmq_get_config(src0->type, J, fallback, cc, prec_src1);
+            if (config.type == GGML_TYPE_COUNT || config.stream_k || mmq_get_nbytes_shared(config, cc) > smpbo) {
+                continue;
+            }
+            widths[nwidths++] = J;
+            if (J >= ne12) {
+                break;
+            }
+        }
+
+        // Each expert is handled by exactly one width, using counts read on the GPU.
+        for (int i = 0; i < nwidths; i++) {
+            args.ncols_opt = widths[i];
+            args.moe_min_cols = i == 0 ? 0 : widths[i - 1];
+            args.moe_max_cols = i + 1 == nwidths ? INT_MAX : widths[i];
+            ggml_cuda_mul_mat_q_switch_type(ctx, args, stream, prec_src1);
+        }
+        if (nwidths > 0) {
+            return;
+        }
+    }
 
     ggml_cuda_mul_mat_q_switch_type(ctx, args, stream, prec_src1);
 }

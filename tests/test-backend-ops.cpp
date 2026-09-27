@@ -5304,7 +5304,7 @@ struct test_mul_mat_id_mmq : public test_mul_mat_id {
     }
 };
 
-static void add_mmq_moe_test_cases(std::vector<std::unique_ptr<test_case>> & test_cases) {
+static void add_mmq_moe_test_cases(std::vector<std::unique_ptr<test_case>> & test_cases, bool boundaries = false) {
     for (bool concentrated : {false, true}) {
         for (int n : {32, 128}) {
             for (ggml_type type : {GGML_TYPE_Q8_0, GGML_TYPE_IQ4_XS}) {
@@ -5316,6 +5316,17 @@ static void add_mmq_moe_test_cases(std::vector<std::unique_ptr<test_case>> & tes
             test_cases.emplace_back(new test_mul_mat_id_mmq(GGML_TYPE_Q4_K, 256, true, 512, n, 2048, concentrated));
             test_cases.emplace_back(new test_mul_mat_id_mmq(GGML_TYPE_Q4_K, 256, true, 1024, n, 2048, concentrated));
             test_cases.emplace_back(new test_mul_mat_id_mmq(GGML_TYPE_Q4_K, 256, false, 2048, n, 512, concentrated));
+        }
+    }
+    if (boundaries) {
+        for (bool concentrated : {false, true}) {
+            for (ggml_type type : {GGML_TYPE_Q8_0, GGML_TYPE_IQ4_XS, GGML_TYPE_Q4_K}) {
+                for (int m : {127, 128}) {
+                    for (int n : {17, 33, 65, 129}) {
+                        test_cases.emplace_back(new test_mul_mat_id_mmq(type, 16, true, m, n, 256, concentrated));
+                    }
+                }
+            }
         }
     }
 }
@@ -9151,7 +9162,7 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     std::vector<std::unique_ptr<test_case>> test_cases;
     std::default_random_engine rng(0);
 
-    add_mmq_moe_test_cases(test_cases);
+    add_mmq_moe_test_cases(test_cases, true);
 
     // unary ops
     for (ggml_type type : {GGML_TYPE_F16, GGML_TYPE_F32}) {

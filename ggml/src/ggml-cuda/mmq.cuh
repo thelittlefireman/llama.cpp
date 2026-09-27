@@ -956,6 +956,21 @@ static __device__ __forceinline__ void mul_mat_q_process_tile(
 }
 
 
+// Reserve at most one extra column tile per expert without a prefix-sum kernel.
+static __device__ __forceinline__ int2 mmq_moe_tile(const int32_t * bounds, int n_experts, int J, int tile) {
+    int lo = 0;
+    int hi = n_experts;
+    while (lo + 1 < hi) {
+        const int mid = (lo + hi) / 2;
+        if (bounds[mid] / J + mid <= tile) {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    return make_int2(lo, tile - bounds[lo] / J - lo);
+}
+
 // The mul_mat_q kernel implements "stream-k" work partitioning as described in https://arxiv.org/abs/2301.03598
 
 template <ggml_type type, int J, bool fallback, ggml_prec prec_src1 = GGML_PREC_Q8>
@@ -967,7 +982,7 @@ static __global__ void mul_mat_q(
         const uint3 blocks_per_ne00, const int nrows_x, const int ncols_dst, const int stride_row_x, const int ncols_y, const int stride_col_dst,
         const uint3 channel_ratio, const uint3 nchannels_y, const int stride_channel_x, const int stride_channel_y, const int stride_channel_dst,
         const uint3 sample_ratio, const uint3 nsamples_y, const int stride_sample_x, const int stride_sample_y, const int stride_sample_dst,
-        const uint3 ntx) {
+        const uint3 ntx, const bool compact_moe, const int moe_min_cols, const int moe_max_cols) {
 
     // Skip unused template specializations for faster compilation:
     if (ggml_cuda_mmq_get_config(type, J, fallback, prec_src1).type == GGML_TYPE_COUNT) {
@@ -981,6 +996,22 @@ static __global__ void mul_mat_q(
     constexpr int I         = ggml_cuda_mmq_get_I(type, J, fallback, prec_src1);
 
     const uint32_t nty = (nrows_x + I - 1) / I; // Number of tiles y
+
+    int moe_expert = fastmodulo(blockIdx.z, nchannels_y);
+    int moe_tile   = blockIdx.y;
+    if constexpr (!ggml_cuda_mmq_get_stream_k(type, J, fallback, prec_src1)) {
+        if (ids_dst && moe_max_cols > 0) {
+            if (compact_moe) {
+                const int2 tile = mmq_moe_tile(expert_bounds, nchannels_y.z, J, blockIdx.y);
+                moe_expert = tile.x;
+                moe_tile   = tile.y;
+            }
+            const int ncols = expert_bounds[moe_expert + 1] - expert_bounds[moe_expert];
+            if (ncols <= moe_min_cols || ncols > moe_max_cols || moe_tile*J >= ncols) {
+                return;
+            }
+        }
+    }
 
     // Initialize the ids for writing back data with just the index.
     // For regular matrix multiplications this is never changed.
@@ -1001,8 +1032,8 @@ static __global__ void mul_mat_q(
     if constexpr (!ggml_cuda_mmq_get_stream_k(type, J, fallback, prec_src1)) {
         const uint2 tmp2 = fast_div_modulo(blockIdx.z, nchannels_y);
         const int wt = tmp2.x;
-        const int zt = tmp2.y;
-        const int jt = blockIdx.y;
+        const int zt = moe_expert;
+        const int jt = moe_tile;
         const int it = blockIdx.x;
 
         // Defaults for regular matrix multiplication:
@@ -1042,7 +1073,8 @@ static __global__ void mul_mat_q(
                     break;
                 }
 
-                ids_dst_shared[j] = ids_dst[col_low + jt*J + j];
+                const int col = jt*J + j;
+                ids_dst_shared[j] = col < col_diff ? ids_dst[col_low + col] : 0;
             }
             __syncthreads();
         }
@@ -1390,7 +1422,9 @@ struct mmq_args {
     int64_t nchannels_x; int64_t nchannels_y; int64_t stride_channel_x; int64_t stride_channel_y; int64_t stride_channel_dst;
     int64_t nsamples_x; int64_t nsamples_y; int64_t stride_sample_x; int64_t stride_sample_y; int64_t stride_sample_dst;
     int64_t ncols_max;
-    int64_t ncols_opt; // value to optimize the tile size against, launch grid still uses ncols_max
+    int64_t ncols_opt; // target width for tile selection
+    int moe_min_cols = 0;
+    int moe_max_cols = 0; // zero disables expert filtering
 };
 
 static size_t mmq_get_nbytes_shared(const ggml_cuda_mmq_config & config, const int cc) {
@@ -1420,7 +1454,13 @@ static void launch_mul_mat_q(ggml_backend_cuda_context & ctx, const mmq_args & a
     const int nty  = (args.nrows_x   + config.I - 1) / config.I;
     const int ntx  = (args.ncols_max + config.J - 1) / config.J;
     const int ntzw = args.nchannels_y * args.nsamples_y;
-    const dim3 block_nums_xy_tiling(nty, ntx, ntzw);
+    dim3 block_nums_xy_tiling(nty, ntx, ntzw);
+    const int64_t compact_ntx = args.ncols_dst / J + args.nchannels_y;
+    const bool compact_moe = args.ids_dst && args.moe_max_cols > 0 && args.nsamples_y == 1 &&
+        compact_ntx < (int64_t) ntx*ntzw && compact_ntx <= 65535;
+    if (compact_moe) {
+        block_nums_xy_tiling = dim3(nty, compact_ntx, 1);
+    }
 
     GGML_ASSERT(args.nchannels_y % args.nchannels_x == 0);
     GGML_ASSERT(args.nsamples_y  % args.nsamples_x  == 0);
@@ -1440,7 +1480,7 @@ static void launch_mul_mat_q(ggml_backend_cuda_context & ctx, const mmq_args & a
              blocks_per_ne00_fd, args.nrows_x, args.ncols_dst, args.stride_row_x, args.ncols_y, args.nrows_dst,
              channel_ratio_fd, nchannels_y_fd, args.stride_channel_x, args.stride_channel_y, args.stride_channel_dst,
              sample_ratio_fd, nsamples_y_fd, args.stride_sample_x, args.stride_sample_y, args.stride_sample_dst,
-             ntx_fd);
+             ntx_fd, compact_moe, args.moe_min_cols, args.moe_max_cols);
         return;
     }
 
@@ -1469,7 +1509,7 @@ static void launch_mul_mat_q(ggml_backend_cuda_context & ctx, const mmq_args & a
          blocks_per_ne00_fd, args.nrows_x, args.ncols_dst, args.stride_row_x, args.ncols_y, args.nrows_dst,
          channel_ratio_fd, nchannels_y_fd, args.stride_channel_x, args.stride_channel_y, args.stride_channel_dst,
          sample_ratio_fd, nsamples_y_fd, args.stride_sample_x, args.stride_sample_y, args.stride_sample_dst,
-         ntx_fd);
+         ntx_fd, false, 0, 0);
 
     if (!fixup_needed) {
         return;
@@ -1516,10 +1556,10 @@ void mul_mat_q_switch_J(ggml_backend_cuda_context & ctx, const mmq_args & args, 
         if (seen.size() < 256 && std::find(seen.begin(), seen.end(), key) == seen.end()) {
             seen.push_back(key);
             const ggml_cuda_mmq_config config = ggml_cuda_mmq_get_config(type, J_best, fallback, cc, prec_src1);
-            GGML_LOG_INFO("mmq-moe: device=%d type=%s M=%lld K=%lld T=%lld E=%lld used=%lld target=%lld I=%d J=%d threads=%d shared=%zu fallback=%d\n",
+            GGML_LOG_INFO("mmq-moe: device=%d type=%s M=%lld K=%lld T=%lld E=%lld used=%lld target=%lld I=%d J=%d threads=%d shared=%zu fallback=%d min_cols=%d max_cols=%d\n",
                 id, ggml_type_name(type), (long long) args.nrows_x, (long long) args.ncols_x, (long long) args.ncols_max,
                 (long long) args.nchannels_x, (long long) (args.ncols_dst / args.ncols_max), (long long) args.ncols_opt,
-                config.I, config.J, config.nthreads, mmq_get_nbytes_shared(config, cc), (int) fallback);
+                config.I, config.J, config.nthreads, mmq_get_nbytes_shared(config, cc), (int) fallback, args.moe_min_cols, args.moe_max_cols);
         }
     }
 
