@@ -600,6 +600,62 @@ static void mul_mat_vec_f_cuda_switch_ncols_dst(
                  stride_channel_dst, nsamples_x, nsamples_dst, stride_sample_x, stride_sample_y, stride_sample_dst,
                  nsamples_dst, ids_stride, stream);
             break;
+        case 9:
+            launch_mul_mat_vec_f_cuda<T, type_acc, 9>
+                (x, y, ids, fusion, dst, ncols, nrows, stride_row, stride_col_y, stride_col_dst,
+                 nchannels_x, nchannels_y, nchannels_dst, stride_channel_x, stride_channel_y,
+                 stride_channel_dst, nsamples_x, nsamples_dst, stride_sample_x, stride_sample_y, stride_sample_dst,
+                 nsamples_dst, ids_stride, stream);
+            break;
+        case 10:
+            launch_mul_mat_vec_f_cuda<T, type_acc, 10>
+                (x, y, ids, fusion, dst, ncols, nrows, stride_row, stride_col_y, stride_col_dst,
+                 nchannels_x, nchannels_y, nchannels_dst, stride_channel_x, stride_channel_y,
+                 stride_channel_dst, nsamples_x, nsamples_dst, stride_sample_x, stride_sample_y, stride_sample_dst,
+                 nsamples_dst, ids_stride, stream);
+            break;
+        case 11:
+            launch_mul_mat_vec_f_cuda<T, type_acc, 11>
+                (x, y, ids, fusion, dst, ncols, nrows, stride_row, stride_col_y, stride_col_dst,
+                 nchannels_x, nchannels_y, nchannels_dst, stride_channel_x, stride_channel_y,
+                 stride_channel_dst, nsamples_x, nsamples_dst, stride_sample_x, stride_sample_y, stride_sample_dst,
+                 nsamples_dst, ids_stride, stream);
+            break;
+        case 12:
+            launch_mul_mat_vec_f_cuda<T, type_acc, 12>
+                (x, y, ids, fusion, dst, ncols, nrows, stride_row, stride_col_y, stride_col_dst,
+                 nchannels_x, nchannels_y, nchannels_dst, stride_channel_x, stride_channel_y,
+                 stride_channel_dst, nsamples_x, nsamples_dst, stride_sample_x, stride_sample_y, stride_sample_dst,
+                 nsamples_dst, ids_stride, stream);
+            break;
+        case 13:
+            launch_mul_mat_vec_f_cuda<T, type_acc, 13>
+                (x, y, ids, fusion, dst, ncols, nrows, stride_row, stride_col_y, stride_col_dst,
+                 nchannels_x, nchannels_y, nchannels_dst, stride_channel_x, stride_channel_y,
+                 stride_channel_dst, nsamples_x, nsamples_dst, stride_sample_x, stride_sample_y, stride_sample_dst,
+                 nsamples_dst, ids_stride, stream);
+            break;
+        case 14:
+            launch_mul_mat_vec_f_cuda<T, type_acc, 14>
+                (x, y, ids, fusion, dst, ncols, nrows, stride_row, stride_col_y, stride_col_dst,
+                 nchannels_x, nchannels_y, nchannels_dst, stride_channel_x, stride_channel_y,
+                 stride_channel_dst, nsamples_x, nsamples_dst, stride_sample_x, stride_sample_y, stride_sample_dst,
+                 nsamples_dst, ids_stride, stream);
+            break;
+        case 15:
+            launch_mul_mat_vec_f_cuda<T, type_acc, 15>
+                (x, y, ids, fusion, dst, ncols, nrows, stride_row, stride_col_y, stride_col_dst,
+                 nchannels_x, nchannels_y, nchannels_dst, stride_channel_x, stride_channel_y,
+                 stride_channel_dst, nsamples_x, nsamples_dst, stride_sample_x, stride_sample_y, stride_sample_dst,
+                 nsamples_dst, ids_stride, stream);
+            break;
+        case 16:
+            launch_mul_mat_vec_f_cuda<T, type_acc, 16>
+                (x, y, ids, fusion, dst, ncols, nrows, stride_row, stride_col_y, stride_col_dst,
+                 nchannels_x, nchannels_y, nchannels_dst, stride_channel_x, stride_channel_y,
+                 stride_channel_dst, nsamples_x, nsamples_dst, stride_sample_x, stride_sample_y, stride_sample_dst,
+                 nsamples_dst, ids_stride, stream);
+            break;
         default:
             GGML_ABORT("fatal error");
             break;
@@ -820,9 +876,12 @@ bool ggml_cuda_should_use_mmvf(enum ggml_type type, int cc, const int64_t * src0
                 if (fp32_mma_hardware_available(cc)) {
                     return ne11 <= 3;
                 }
-                return ne11 <= 8;
+                if (cc == GGML_CUDA_CC_VEGA20) {
+                    return ne11 <= MMVF_MAX_BATCH_SIZE_GFX906_F32;
+                }
+                return ne11 <= MMVF_MAX_BATCH_SIZE;
             }
-            return ne11 <= 8;
+            return ne11 <= MMVF_MAX_BATCH_SIZE;
         case GGML_TYPE_F16:
             if (GGML_CUDA_CC_IS_NVIDIA(cc)) {
                 const bool src0_small = (src0_ne[1] <= 512 || src0_ne[2]*src0_ne[3] == 1);
