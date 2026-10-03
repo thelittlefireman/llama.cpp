@@ -11579,6 +11579,11 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
         test_cases.emplace_back(new test_mul_mat(GGML_TYPE_IQ4_XS, GGML_TYPE_F32, 4096, bs, 14336, {1, 1}, {1, 1}));
     }
 
+    // GCN MMQ IQ4_XS J24 fallback=true selection cases.
+    for (int bs : {17, 23, 24}) {
+        test_cases.emplace_back(new test_mul_mat(GGML_TYPE_IQ4_XS, GGML_TYPE_F32, 4097, bs, 14336, {1, 1}, {1, 1}));
+    }
+
     // GCN MMQ IQ4_XS J40 fallback=false cases.
     for (int bs : {33, 39, 40}) {
         test_cases.emplace_back(new test_mul_mat(GGML_TYPE_IQ4_XS, GGML_TYPE_F32, 4096, bs, 14336, {1, 1}, {1, 1}));
