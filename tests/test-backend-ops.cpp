@@ -11622,6 +11622,18 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
         }
     }
 
+    // GCN MMQ remaining K-quant batched config cases.
+    for (ggml_type type : {GGML_TYPE_Q4_K, GGML_TYPE_Q5_K, GGML_TYPE_Q6_K}) {
+        for (int m : {4096, 4097}) {
+            for (int bs : {9, 15, 16, 41, 47, 48}) {
+                test_cases.emplace_back(new test_mul_mat(type, GGML_TYPE_F32, m, bs, 14336, {1, 1}, {1, 1}));
+            }
+        }
+        for (int bs : {17, 23, 24, 33, 39, 40}) {
+            test_cases.emplace_back(new test_mul_mat(type, GGML_TYPE_F32, 4097, bs, 14336, {1, 1}, {1, 1}));
+        }
+    }
+
     // GCN MMQ IQ4_NL J24 fallback selection cases.
     for (int bs : {17, 23, 24}) {
         test_cases.emplace_back(new test_mul_mat(GGML_TYPE_IQ4_NL, GGML_TYPE_F32, 4097, bs, 14336, {1, 1}, {1, 1}));
