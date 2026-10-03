@@ -1,0 +1,153 @@
+name: Q2_K NVIDIA spill check
+
+on:
+  pull_request:
+    branches:
+      - master
+  workflow_dispatch:
+
+jobs:
+  q2k-spills:
+    runs-on: ubuntu-latest
+    container:
+      image: nvidia/cuda:12.6.3-devel-ubuntu22.04
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - arch: "61"
+            name: pascal-sm61
+          - arch: "70"
+            name: volta-sm70
+    name: ${{ matrix.name }}
+    steps:
+      - name: Install build tools
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends cmake ninja-build git python3 binutils ca-certificates
+      - name: Checkout baseline
+        uses: actions/checkout@v4
+        with:
+          ref: 254b177307b14d055bbe4c050c9c441a1e06d8a4
+          path: baseline
+      - name: Checkout candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          path: candidate
+      - name: Build baseline
+        shell: bash
+        run: |
+          set -o pipefail
+          cmake -S baseline -B build-baseline -G Ninja \
+            -DGGML_CUDA=ON \
+            -DGGML_NATIVE=OFF \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CUDA_ARCHITECTURES=${{ matrix.arch }} \
+            -DCMAKE_CUDA_FLAGS="-Xptxas=-v,-warn-spills"
+          cmake --build build-baseline --target ggml-cuda -j2 2>&1 | tee baseline-ptxas.log
+      - name: Build candidate
+        shell: bash
+        run: |
+          set -o pipefail
+          cmake -S candidate -B build-candidate -G Ninja \
+            -DGGML_CUDA=ON \
+            -DGGML_NATIVE=OFF \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_CUDA_ARCHITECTURES=${{ matrix.arch }} \
+            -DCMAKE_CUDA_FLAGS="-Xptxas=-v,-warn-spills"
+          cmake --build build-candidate --target ggml-cuda -j2 2>&1 | tee candidate-ptxas.log
+      - name: Summarize ptxas spills
+        shell: bash
+        run: |
+          cat > summarize.py <<'PY'
+          import re
+          import sys
+
+          compile_re = re.compile(r"ptxas info\s*: Compiling entry function '([^']+)'")
+          props_re = re.compile(r"ptxas info\s*: Function properties for (.+)")
+          spill_re = re.compile(r"(\d+) bytes stack frame, (\d+) bytes spill stores, (\d+) bytes spill loads")
+          regs_re = re.compile(r"Used (\d+) registers")
+
+          def parse(path):
+              kernels = []
+              current = None
+              with open(path, "r", errors="replace") as f:
+                  for line in f:
+                      m = compile_re.search(line)
+                      if m:
+                          current = {"name": m.group(1), "stack": 0, "stores": 0, "loads": 0, "registers": None}
+                          kernels.append(current)
+                          continue
+                      m = props_re.search(line)
+                      if m and current is None:
+                          current = {"name": m.group(1).strip(), "stack": 0, "stores": 0, "loads": 0, "registers": None}
+                          kernels.append(current)
+                          continue
+                      if current is None:
+                          continue
+                      m = spill_re.search(line)
+                      if m:
+                          current["stack"] = int(m.group(1))
+                          current["stores"] = int(m.group(2))
+                          current["loads"] = int(m.group(3))
+                          continue
+                      m = regs_re.search(line)
+                      if m:
+                          current["registers"] = int(m.group(1))
+              return kernels
+
+          def stats(kernels):
+              spilling = [k for k in kernels if k["stores"] or k["loads"]]
+              return {
+                  "kernels": len(kernels),
+                  "spilling": len(spilling),
+                  "stores": sum(k["stores"] for k in kernels),
+                  "loads": sum(k["loads"] for k in kernels),
+                  "stack": sum(k["stack"] for k in kernels),
+                  "max_registers": max((k["registers"] or 0 for k in kernels), default=0),
+              }, spilling
+
+          base = parse("baseline-ptxas.log")
+          cand = parse("candidate-ptxas.log")
+          bs, bsp = stats(base)
+          cs, csp = stats(cand)
+
+          print("| build | kernels | spilling kernels | spill stores (B) | spill loads (B) | stack frame total (B) | max registers |")
+          print("| --- | ---: | ---: | ---: | ---: | ---: | ---: |")
+          print(f"| baseline | {bs['kernels']} | {bs['spilling']} | {bs['stores']} | {bs['loads']} | {bs['stack']} | {bs['max_registers']} |")
+          print(f"| candidate | {cs['kernels']} | {cs['spilling']} | {cs['stores']} | {cs['loads']} | {cs['stack']} | {cs['max_registers']} |")
+          print()
+          print(f"spill stores delta: {cs['stores'] - bs['stores']:+d} B")
+          print(f"spill loads delta: {cs['loads'] - bs['loads']:+d} B")
+          print(f"spilling kernels delta: {cs['spilling'] - bs['spilling']:+d}")
+
+          with open("spill-summary.md", "w") as f:
+              f.write("| build | kernels | spilling kernels | spill stores (B) | spill loads (B) | stack frame total (B) | max registers |\n")
+              f.write("| --- | ---: | ---: | ---: | ---: | ---: | ---: |\n")
+              f.write(f"| baseline | {bs['kernels']} | {bs['spilling']} | {bs['stores']} | {bs['loads']} | {bs['stack']} | {bs['max_registers']} |\n")
+              f.write(f"| candidate | {cs['kernels']} | {cs['spilling']} | {cs['stores']} | {cs['loads']} | {cs['stack']} | {cs['max_registers']} |\n\n")
+              f.write(f"spill stores delta: {cs['stores'] - bs['stores']:+d} B\n\n")
+              f.write(f"spill loads delta: {cs['loads'] - bs['loads']:+d} B\n\n")
+              f.write(f"spilling kernels delta: {cs['spilling'] - bs['spilling']:+d}\n")
+
+          with open("baseline-spilling-kernels.txt", "w") as f:
+              for k in sorted(bsp, key=lambda x: (x["stores"] + x["loads"]), reverse=True):
+                  f.write(f"{k['stores']:6d} store B {k['loads']:6d} load B {k['stack']:6d} stack B {k['registers'] or 0:3d} regs {k['name']}\n")
+          with open("candidate-spilling-kernels.txt", "w") as f:
+              for k in sorted(csp, key=lambda x: (x["stores"] + x["loads"]), reverse=True):
+                  f.write(f"{k['stores']:6d} store B {k['loads']:6d} load B {k['stack']:6d} stack B {k['registers'] or 0:3d} regs {k['name']}\n")
+          PY
+          python3 summarize.py | tee spill-summary.txt
+          cat spill-summary.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload spill logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: q2k-spills-${{ matrix.name }}
+          path: |
+            baseline-ptxas.log
+            candidate-ptxas.log
+            spill-summary.md
+            spill-summary.txt
+            baseline-spilling-kernels.txt
+            candidate-spilling-kernels.txt
