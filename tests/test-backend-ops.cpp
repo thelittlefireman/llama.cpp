@@ -11567,6 +11567,11 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
         }
     }
 
+    // GCN MMQ IQ4_XS J8 fallback=true cases.
+    for (int bs : {1, 5, 8}) {
+        test_cases.emplace_back(new test_mul_mat(GGML_TYPE_IQ4_XS, GGML_TYPE_F32, 4097, bs, 14336, {1, 1}, {1, 1}));
+    }
+
     // GCN MMQ IQ4_XS cases around J=16.
     for (int m : {4096, 4097}) {
         for (int bs : {9, 15, 16}) {
