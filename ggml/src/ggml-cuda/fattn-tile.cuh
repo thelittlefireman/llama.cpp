@@ -398,6 +398,47 @@ static constexpr __device__ int ggml_cuda_fattn_tile_get_warp_size(const int DKQ
 #endif
 }
 
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+template<int offset>
+static __device__ __forceinline__ float flash_attn_tile_ds_swizzle_xor(float x) {
+    static_assert(offset == 1 || offset == 2 || offset == 4 || offset == 8 || offset == 16, "bad offset");
+    constexpr int pattern = 0x1f | (offset << 10);
+    return __builtin_bit_cast(float, __builtin_amdgcn_ds_swizzle(__builtin_bit_cast(int, x), pattern));
+}
+#endif // defined(GGML_USE_HIP) && defined(__gfx906__)
+
+template<int width>
+static __device__ __forceinline__ float flash_attn_tile_warp_reduce_sum(float x) {
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+    if constexpr (width == 64) {
+        x += __shfl_xor_sync(0xffffffff, x, 32, 64);
+        x += flash_attn_tile_ds_swizzle_xor<16>(x);
+        x += flash_attn_tile_ds_swizzle_xor< 8>(x);
+        x += flash_attn_tile_ds_swizzle_xor< 4>(x);
+        x += flash_attn_tile_ds_swizzle_xor< 2>(x);
+        x += flash_attn_tile_ds_swizzle_xor< 1>(x);
+        return x;
+    }
+#endif // defined(GGML_USE_HIP) && defined(__gfx906__)
+    return warp_reduce_sum<width>(x);
+}
+
+template<int width>
+static __device__ __forceinline__ float flash_attn_tile_warp_reduce_max(float x) {
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+    if constexpr (width == 64) {
+        x = fmaxf(x, __shfl_xor_sync(0xffffffff, x, 32, 64));
+        x = fmaxf(x, flash_attn_tile_ds_swizzle_xor<16>(x));
+        x = fmaxf(x, flash_attn_tile_ds_swizzle_xor< 8>(x));
+        x = fmaxf(x, flash_attn_tile_ds_swizzle_xor< 4>(x));
+        x = fmaxf(x, flash_attn_tile_ds_swizzle_xor< 2>(x));
+        x = fmaxf(x, flash_attn_tile_ds_swizzle_xor< 1>(x));
+        return x;
+    }
+#endif // defined(GGML_USE_HIP) && defined(__gfx906__)
+    return warp_reduce_max<width>(x);
+}
+
 // TODO: deduplicate with mma-f16
 template<int warp_size, int nwarps, int I, int J, int J_padding, bool oob_check>
 static __device__ __forceinline__ void flash_attn_tile_load_tile(
@@ -668,7 +709,7 @@ static __device__ __forceinline__ void flash_attn_tile_iter(
             }
         }
 
-        KQ_max_new[jc0] = warp_reduce_max<warp_size>(KQ_max_new[jc0]);
+        KQ_max_new[jc0] = flash_attn_tile_warp_reduce_max<warp_size>(KQ_max_new[jc0]);
     }
 
     if constexpr (np == 1) {
@@ -1005,7 +1046,7 @@ static __global__ void flash_attn_tile(
 
 #pragma unroll
     for (int jc0 = 0; jc0 < cpw; ++jc0) {
-        KQ_sum[jc0] = warp_reduce_sum<warp_size>(KQ_sum[jc0]);
+        KQ_sum[jc0] = flash_attn_tile_warp_reduce_sum<warp_size>(KQ_sum[jc0]);
     }
 
     if constexpr (np > 1) {
