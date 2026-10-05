@@ -672,10 +672,22 @@ static __device__ __forceinline__ void flash_attn_tile_iter(
         for (int jc1 = 0; jc1 < KQ_cs; ++jc1) {
             const int jc = jc0 + jc1;
 
-            const bool rescale = KQ_max_new[jc] != KQ_max[jc];
-            float KQ_max_scale = 1.0f;
+            const float KQ_max_old = KQ_max[jc];
+            const bool rescale = KQ_max_new[jc] != KQ_max_old;
+            KQ_max[jc] = KQ_max_new[jc];
+
+            float KQ_sum_add = 0.0f;
+#pragma unroll
+            for (int i0 = 0; i0 < nbatch_fa; i0 += np*warp_size) {
+                const float val = !oob_check || i0 + (threadIdx.y % np)*warp_size + threadIdx.x < static_cast<uint32_t>(k_VKQ_sup) ?
+                    expf(KQ_acc[(i0/(np*warp_size))*cpw + jc] - KQ_max[jc]) : 0.0f;
+                KQ_sum_add += val;
+                tmp[i0/(np*warp_size)][jc1] = val;
+            }
+
             if (rescale) {
-                KQ_max_scale = expf(KQ_max[jc] - KQ_max_new[jc]);
+                const float KQ_max_scale = expf(KQ_max_old - KQ_max[jc]);
+                KQ_sum[jc] = KQ_sum[jc]*KQ_max_scale + KQ_sum_add;
 
 #ifdef FAST_FP16_AVAILABLE
                 const half2 KQ_max_scale_h2 = make_half2(KQ_max_scale, KQ_max_scale);
@@ -690,18 +702,9 @@ static __device__ __forceinline__ void flash_attn_tile_iter(
                     VKQ[jc*((DVp/2)/warp_size) + i0/warp_size].y *= KQ_max_scale;
                 }
 #endif // FAST_FP16_AVAILABLE
+            } else {
+                KQ_sum[jc] += KQ_sum_add;
             }
-            KQ_max[jc] = KQ_max_new[jc];
-
-            float KQ_sum_add = 0.0f;
-#pragma unroll
-            for (int i0 = 0; i0 < nbatch_fa; i0 += np*warp_size) {
-                const float val = !oob_check || i0 + (threadIdx.y % np)*warp_size + threadIdx.x < static_cast<uint32_t>(k_VKQ_sup) ?
-                    expf(KQ_acc[(i0/(np*warp_size))*cpw + jc] - KQ_max[jc]) : 0.0f;
-                KQ_sum_add += val;
-                tmp[i0/(np*warp_size)][jc1] = val;
-            }
-            KQ_sum[jc] = KQ_sum[jc]*KQ_max_scale + KQ_sum_add;
         }
 
 #pragma unroll
