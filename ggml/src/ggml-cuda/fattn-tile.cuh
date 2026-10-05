@@ -234,6 +234,11 @@ static constexpr __host__ __device__ uint32_t ggml_cuda_fattn_tile_get_config_am
     return 0;
 }
 
+static constexpr __host__ __device__ uint32_t ggml_cuda_fattn_tile_get_config_gfx906(const int DKQ, const int DV, const int ncols) {
+    GGML_CUDA_FATTN_TILE_CONFIG_CASE(256, 256, 32, 256, 2,  64,  64)
+    return ggml_cuda_fattn_tile_get_config_amd(DKQ, DV, ncols);
+}
+
 static constexpr __host__ __device__ uint32_t ggml_cuda_fattn_tile_get_config_amd_rdna(const int DKQ, const int DV, const int ncols) {
     GGML_CUDA_FATTN_TILE_CONFIG_CASE( 40,  40,  2,  64, 2,  32,  40)
     GGML_CUDA_FATTN_TILE_CONFIG_CASE( 40,  40,  4, 128, 2,  32,  40)
@@ -314,6 +319,9 @@ static constexpr __host__ __device__ uint32_t ggml_cuda_fattn_tile_get_config_am
 
 static __host__ uint32_t ggml_cuda_fattn_tile_get_config(const int DKQ, const int DV, const int ncols, const int cc) {
     if (GGML_CUDA_CC_IS_AMD(cc)) {
+        if (cc == GGML_CUDA_CC_VEGA20) {
+            return ggml_cuda_fattn_tile_get_config_gfx906(DKQ, DV, ncols);
+        }
         if (GGML_CUDA_CC_IS_RDNA(cc)) {
             return ggml_cuda_fattn_tile_get_config_amd_rdna(DKQ, DV, ncols);
         }
@@ -327,11 +335,13 @@ static __host__ uint32_t ggml_cuda_fattn_tile_get_config(const int DKQ, const in
 
 static constexpr __device__ uint32_t ggml_cuda_fattn_tile_get_config(const int DKQ, const int DV, const int ncols) {
 #ifdef GGML_USE_HIP
-#ifdef RDNA
+#ifdef __gfx906__
+    return ggml_cuda_fattn_tile_get_config_gfx906(DKQ, DV, ncols);
+#elif defined(RDNA)
     return ggml_cuda_fattn_tile_get_config_amd_rdna(DKQ, DV, ncols);
 #else
     return ggml_cuda_fattn_tile_get_config_amd(DKQ, DV, ncols);
-#endif // RDNA
+#endif // __gfx906__
 #else
 #ifdef FAST_FP16_AVAILABLE
     return ggml_cuda_fattn_tile_get_config_nvidia_fp16(DKQ, DV, ncols);
@@ -371,6 +381,21 @@ static __host__ int ggml_cuda_fattn_tile_get_nbatch_K(const int DKQ, const int D
 
 static constexpr __device__ int ggml_cuda_fattn_tile_get_nbatch_K(const int DKQ, const int DV, const int ncols) {
     return (ggml_cuda_fattn_tile_get_config(DKQ, DV, ncols) >> 23) & ((1 << 9) - 1);
+}
+
+static __host__ int ggml_cuda_fattn_tile_get_warp_size(const int DKQ, const int DV, const int ncols, const int cc) {
+    return cc == GGML_CUDA_CC_VEGA20 && DKQ == 256 && DV == 256 && ncols == 32 ? 64 : 32;
+}
+
+static constexpr __device__ int ggml_cuda_fattn_tile_get_warp_size(const int DKQ, const int DV, const int ncols) {
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+    return DKQ == 256 && DV == 256 && ncols == 32 ? 64 : 32;
+#else
+    GGML_UNUSED(DKQ);
+    GGML_UNUSED(DV);
+    GGML_UNUSED(ncols);
+    return 32;
+#endif
 }
 
 // TODO: deduplicate with mma-f16
@@ -841,8 +866,8 @@ static __global__ void flash_attn_tile(
     static_assert(ggml_cuda_fattn_tile_get_config(DKQ, DV, ncols1*ncols2) != 0, "kernel config not defined");
 
     constexpr int ncols     = ncols1*ncols2;
-    constexpr int warp_size = 32;
-    constexpr int nwarps    = ggml_cuda_fattn_tile_get_nthreads (DKQ, DV, ncols1*ncols2) / warp_size;
+    constexpr int warp_size = ggml_cuda_fattn_tile_get_warp_size(DKQ, DV, ncols);
+    constexpr int nwarps    = ggml_cuda_fattn_tile_get_nthreads (DKQ, DV, ncols) / warp_size;
     constexpr int nbatch_fa = ggml_cuda_fattn_tile_get_nbatch_fa(DKQ, DV, ncols1*ncols2);
     constexpr int nbatch_K  = ggml_cuda_fattn_tile_get_nbatch_K (DKQ, DV, ncols1*ncols2);
 
@@ -1149,9 +1174,8 @@ template <int DKQ, int DV, int ncols2, bool use_logit_softcap>
 static void launch_fattn_tile_switch_ncols1(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const ggml_tensor * Q = dst->src[0];
 
-    const int id        = ggml_cuda_get_device();
-    const int cc        = ggml_cuda_info().devices[id].cc;
-    const int warp_size = 32;
+    const int id = ggml_cuda_get_device();
+    const int cc = ggml_cuda_info().devices[id].cc;
 
     constexpr size_t nbytes_shared = 0;
 
@@ -1159,6 +1183,7 @@ static void launch_fattn_tile_switch_ncols1(ggml_backend_cuda_context & ctx, ggm
     if constexpr (DKQ <= 128) {
         if (Q->ne[1] > 32/ncols2) {
             constexpr int cols_per_block = 64;
+            const int warp_size = ggml_cuda_fattn_tile_get_warp_size(DKQ, DV, cols_per_block, cc);
             const int nwarps    = ggml_cuda_fattn_tile_get_nthreads (DKQ, DV, cols_per_block, cc) / warp_size;
             const int nbatch_fa = ggml_cuda_fattn_tile_get_nbatch_fa(DKQ, DV, cols_per_block, cc);
             fattn_kernel_t fattn_kernel = flash_attn_tile<DKQ, DV, cols_per_block/ncols2, ncols2, use_logit_softcap>;
@@ -1175,6 +1200,7 @@ static void launch_fattn_tile_switch_ncols1(ggml_backend_cuda_context & ctx, ggm
     {
         if (Q->ne[1] > 16/ncols2) {
             constexpr int cols_per_block = 32;
+            const int warp_size = ggml_cuda_fattn_tile_get_warp_size(DKQ, DV, cols_per_block, cc);
             const int nwarps    = ggml_cuda_fattn_tile_get_nthreads (DKQ, DV, cols_per_block, cc) / warp_size;
             const int nbatch_fa = ggml_cuda_fattn_tile_get_nbatch_fa(DKQ, DV, cols_per_block, cc);
             fattn_kernel_t fattn_kernel = flash_attn_tile<DKQ, DV, cols_per_block/ncols2, ncols2, use_logit_softcap>;
@@ -1187,6 +1213,7 @@ static void launch_fattn_tile_switch_ncols1(ggml_backend_cuda_context & ctx, ggm
     if constexpr (ncols2 <= 16) {
         if (Q->ne[1] > 8/ncols2) {
             constexpr int cols_per_block = 16;
+            const int warp_size = ggml_cuda_fattn_tile_get_warp_size(DKQ, DV, cols_per_block, cc);
             const int nwarps    = ggml_cuda_fattn_tile_get_nthreads (DKQ, DV, cols_per_block, cc) / warp_size;
             const int nbatch_fa = ggml_cuda_fattn_tile_get_nbatch_fa(DKQ, DV, cols_per_block, cc);
             fattn_kernel_t fattn_kernel = flash_attn_tile<DKQ, DV, cols_per_block/ncols2, ncols2, use_logit_softcap>;
@@ -1199,6 +1226,7 @@ static void launch_fattn_tile_switch_ncols1(ggml_backend_cuda_context & ctx, ggm
     if constexpr (ncols2 <= 8) {
         if (Q->ne[1] > 4/ncols2) {
             constexpr int cols_per_block = 8;
+            const int warp_size = ggml_cuda_fattn_tile_get_warp_size(DKQ, DV, cols_per_block, cc);
             const int nwarps    = ggml_cuda_fattn_tile_get_nthreads (DKQ, DV, cols_per_block, cc) / warp_size;
             const int nbatch_fa = ggml_cuda_fattn_tile_get_nbatch_fa(DKQ, DV, cols_per_block, cc);
             fattn_kernel_t fattn_kernel = flash_attn_tile<DKQ, DV, cols_per_block/ncols2, ncols2, use_logit_softcap>;
@@ -1211,6 +1239,7 @@ static void launch_fattn_tile_switch_ncols1(ggml_backend_cuda_context & ctx, ggm
     if constexpr (ncols2 <= 4) {
         if (Q->ne[1] > 2/ncols2) {
             constexpr int cols_per_block = 4;
+            const int warp_size = ggml_cuda_fattn_tile_get_warp_size(DKQ, DV, cols_per_block, cc);
             const int nwarps    = ggml_cuda_fattn_tile_get_nthreads (DKQ, DV, cols_per_block, cc) / warp_size;
             const int nbatch_fa = ggml_cuda_fattn_tile_get_nbatch_fa(DKQ, DV, cols_per_block, cc);
             fattn_kernel_t fattn_kernel = flash_attn_tile<DKQ, DV, cols_per_block/ncols2, ncols2, use_logit_softcap>;
@@ -1222,6 +1251,7 @@ static void launch_fattn_tile_switch_ncols1(ggml_backend_cuda_context & ctx, ggm
 
     if constexpr (ncols2 <= 2) {
         constexpr int cols_per_block = 2;
+        const int warp_size = ggml_cuda_fattn_tile_get_warp_size(DKQ, DV, cols_per_block, cc);
         const int nwarps    = ggml_cuda_fattn_tile_get_nthreads (DKQ, DV, cols_per_block, cc) / warp_size;
         const int nbatch_fa = ggml_cuda_fattn_tile_get_nbatch_fa(DKQ, DV, cols_per_block, cc);
         fattn_kernel_t fattn_kernel = flash_attn_tile<DKQ, DV, cols_per_block/ncols2, ncols2, use_logit_softcap>;
