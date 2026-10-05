@@ -687,7 +687,7 @@ static __device__ __forceinline__ void flash_attn_tile_iter(
 
             if (rescale) {
                 const float KQ_max_scale = expf(KQ_max_old - KQ_max[jc]);
-                KQ_sum[jc] = KQ_sum[jc]*KQ_max_scale + KQ_sum_add;
+                KQ_sum[jc] = fmaf(KQ_sum[jc], KQ_max_scale, KQ_sum_add);
 
 #ifdef FAST_FP16_AVAILABLE
                 const half2 KQ_max_scale_h2 = make_half2(KQ_max_scale, KQ_max_scale);
