@@ -673,9 +673,9 @@ static __device__ __forceinline__ void flash_attn_tile_iter(
             const int jc = jc0 + jc1;
 
             const bool rescale = KQ_max_new[jc] != KQ_max[jc];
+            float KQ_max_scale = 1.0f;
             if (rescale) {
-                const float KQ_max_scale = expf(KQ_max[jc] - KQ_max_new[jc]);
-                KQ_sum[jc] *= KQ_max_scale;
+                KQ_max_scale = expf(KQ_max[jc] - KQ_max_new[jc]);
 
 #ifdef FAST_FP16_AVAILABLE
                 const half2 KQ_max_scale_h2 = make_half2(KQ_max_scale, KQ_max_scale);
@@ -701,7 +701,7 @@ static __device__ __forceinline__ void flash_attn_tile_iter(
                 KQ_sum_add += val;
                 tmp[i0/(np*warp_size)][jc1] = val;
             }
-            KQ_sum[jc] += KQ_sum_add;
+            KQ_sum[jc] = KQ_sum[jc]*KQ_max_scale + KQ_sum_add;
         }
 
 #pragma unroll
