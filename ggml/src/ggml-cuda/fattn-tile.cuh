@@ -672,7 +672,25 @@ static __device__ __forceinline__ void flash_attn_tile_iter(
         for (int jc1 = 0; jc1 < KQ_cs; ++jc1) {
             const int jc = jc0 + jc1;
 
-            const float KQ_max_scale = expf(KQ_max[jc] - KQ_max_new[jc]);
+            const bool rescale = KQ_max_new[jc] != KQ_max[jc];
+            if (rescale) {
+                const float KQ_max_scale = expf(KQ_max[jc] - KQ_max_new[jc]);
+                KQ_sum[jc] *= KQ_max_scale;
+
+#ifdef FAST_FP16_AVAILABLE
+                const half2 KQ_max_scale_h2 = make_half2(KQ_max_scale, KQ_max_scale);
+#pragma unroll
+                for (int i0 = 0; i0 < DVp/2; i0 += warp_size) {
+                    VKQ[jc*((DVp/2)/warp_size) + i0/warp_size] *= KQ_max_scale_h2;
+                }
+#else
+#pragma unroll
+                for (int i0 = 0; i0 < DVp/2; i0 += warp_size) {
+                    VKQ[jc*((DVp/2)/warp_size) + i0/warp_size].x *= KQ_max_scale;
+                    VKQ[jc*((DVp/2)/warp_size) + i0/warp_size].y *= KQ_max_scale;
+                }
+#endif // FAST_FP16_AVAILABLE
+            }
             KQ_max[jc] = KQ_max_new[jc];
 
             float KQ_sum_add = 0.0f;
@@ -683,21 +701,7 @@ static __device__ __forceinline__ void flash_attn_tile_iter(
                 KQ_sum_add += val;
                 tmp[i0/(np*warp_size)][jc1] = val;
             }
-            KQ_sum[jc] = KQ_sum[jc]*KQ_max_scale + KQ_sum_add;
-
-#ifdef FAST_FP16_AVAILABLE
-            const half2 KQ_max_scale_h2 = make_half2(KQ_max_scale, KQ_max_scale);
-#pragma unroll
-            for (int i0 = 0; i0 < DVp/2; i0 += warp_size) {
-                VKQ[jc*((DVp/2)/warp_size) + i0/warp_size] *= KQ_max_scale_h2;
-            }
-#else
-#pragma unroll
-            for (int i0 = 0; i0 < DVp/2; i0 += warp_size) {
-                VKQ[jc*((DVp/2)/warp_size) + i0/warp_size].x *= KQ_max_scale;
-                VKQ[jc*((DVp/2)/warp_size) + i0/warp_size].y *= KQ_max_scale;
-            }
-#endif // FAST_FP16_AVAILABLE
+            KQ_sum[jc] += KQ_sum_add;
         }
 
 #pragma unroll
