@@ -374,9 +374,56 @@ static constexpr __device__ int ggml_cuda_fattn_tile_get_nbatch_K(const int DKQ,
 }
 
 // TODO: deduplicate with mma-f16
+// Small software-pipeline stage: keep one 16-byte global load per lane in registers.
+struct flash_attn_tile_prefetch {
+    int4 data;
+};
+
+template<int warp_size, int J>
+static constexpr __device__ int flash_attn_tile_prefetch_stride() {
+    constexpr int cpy_ne = 16 / sizeof(half2);
+    constexpr int chunks = (J/2) / cpy_ne;
+    static_assert(J % 8 == 0, "bad J");
+
+    if constexpr (chunks >= warp_size) {
+        return warp_size;
+    } else if constexpr (chunks >= 32) {
+        return 32;
+    } else if constexpr (chunks >= 16) {
+        return 16;
+    } else if constexpr (chunks >= 8) {
+        return 8;
+    } else if constexpr (chunks >= 4) {
+        return 4;
+    } else if constexpr (chunks >= 2) {
+        return 2;
+    } else {
+        return 1;
+    }
+}
+
+template<int warp_size, int I, int J>
+static __device__ __forceinline__ flash_attn_tile_prefetch flash_attn_tile_prefetch_fragment(
+        const half2 * const __restrict__ KV, const int stride_KV, const int i_sup) {
+    constexpr int cpy_nb = 16;
+    constexpr int cpy_ne = cpy_nb / sizeof(half2);
+    constexpr int stride_j = flash_attn_tile_prefetch_stride<warp_size, J>();
+    constexpr int stride_i = warp_size / stride_j;
+
+    const int i = threadIdx.y*stride_i + (stride_j == warp_size ? 0 : threadIdx.x / stride_j);
+    const int j = (stride_j == warp_size ? threadIdx.x : threadIdx.x % stride_j)*cpy_ne;
+
+    flash_attn_tile_prefetch prefetched = {};
+    if (i < I && i < i_sup) {
+        ggml_cuda_memcpy_1<cpy_nb>(&prefetched.data, KV + i*stride_KV + j);
+    }
+    return prefetched;
+}
+
 template<int warp_size, int nwarps, int I, int J, int J_padding, bool oob_check>
 static __device__ __forceinline__ void flash_attn_tile_load_tile(
-        const half2 * const __restrict__ KV, half2 * const __restrict__ tile_KV, const int stride_KV, const int i_sup) {
+        const half2 * const __restrict__ KV, half2 * const __restrict__ tile_KV, const int stride_KV, const int i_sup,
+        const flash_attn_tile_prefetch * const prefetched = nullptr) {
     constexpr int cpy_nb = ggml_cuda_get_max_cpy_bytes();
     constexpr int cpy_ne = cpy_nb / 4;
 
@@ -404,10 +451,14 @@ static __device__ __forceinline__ void flash_attn_tile_load_tile(
                 for (int j0 = j0_start; j0 < j0_stop; j0 += stride_j) {
                     const int j = j0*cpy_ne + (stride_j == warp_size ? threadIdx.x : threadIdx.x % stride_j)*cpy_ne;
 
-                    const __align__(16) half2 zero[cpy_ne] = {{0.0f, 0.0f}};
-                    ggml_cuda_memcpy_1<cpy_nb>(
-                        tile_KV + i*(J/2 + J_padding) + j,
-                        !oob_check || i < i_sup ? KV + i*stride_KV + j : zero);
+                    if (prefetched && i0 == 0 && j0 == 0 && stride_j == flash_attn_tile_prefetch_stride<warp_size, J>()) {
+                        ggml_cuda_memcpy_1<cpy_nb>(tile_KV + i*(J/2 + J_padding) + j, &prefetched->data);
+                    } else {
+                        const __align__(16) half2 zero[cpy_ne] = {{0.0f, 0.0f}};
+                        ggml_cuda_memcpy_1<cpy_nb>(
+                            tile_KV + i*(J/2 + J_padding) + j,
+                            !oob_check || i < i_sup ? KV + i*stride_KV + j : zero);
+                    }
                 }
             }
         }
@@ -426,7 +477,8 @@ static __device__ __forceinline__ void flash_attn_tile_load_tile(
 
 template<int warp_size, int nwarps, int I, int J, int J_padding, bool oob_check>
 static __device__ __forceinline__ void flash_attn_tile_load_tile(
-        const half2 * const __restrict__ KV, float * const __restrict__ tile_KV, const int stride_KV, const int i_sup) {
+        const half2 * const __restrict__ KV, float * const __restrict__ tile_KV, const int stride_KV, const int i_sup,
+        const flash_attn_tile_prefetch * = nullptr) {
     constexpr int cpy_nb = ggml_cuda_get_max_cpy_bytes();
     constexpr int cpy_ne = cpy_nb / 4;
 
@@ -490,7 +542,8 @@ static __device__ __forceinline__ void flash_attn_tile_iter_KQ(
         const int k_VKQ_0,
         const int k_VKQ_sup,
         const int k_KQ_0,
-        float * KQ_acc) {
+        float * KQ_acc,
+        const flash_attn_tile_prefetch * const K_prefetched = nullptr) {
     constexpr int cpy_nb = ggml_cuda_get_max_cpy_bytes();
     constexpr int cpy_ne = cpy_nb / 4;
 
@@ -499,7 +552,7 @@ static __device__ __forceinline__ void flash_attn_tile_iter_KQ(
     constexpr int np    = nwarps > ncols ? nwarps/ncols : 1; // number of parallel warps per Q column
 
     flash_attn_tile_load_tile<warp_size, nwarps, nbatch_fa, nbatch_K, cpy_ne, oob_check>
-        (K_h2 + int64_t(k_VKQ_0)*stride_K2 + k_KQ_0/2, KV_tmp, stride_K2, k_VKQ_sup);
+        (K_h2 + int64_t(k_VKQ_0)*stride_K2 + k_KQ_0/2, KV_tmp, stride_K2, k_VKQ_sup, K_prefetched);
     __syncthreads();
 
 #ifdef FAST_FP16_AVAILABLE
@@ -575,7 +628,10 @@ static __device__ __forceinline__ void flash_attn_tile_iter(
         T_acc * const VKQ,
         const int k_VKQ_0,
         const int k_VKQ_max,
-        const int col_Q_0) {
+        const int col_Q_0,
+        flash_attn_tile_prefetch * const prefetch,
+        const bool has_prefetched_K,
+        const int k_VKQ_next) {
     constexpr int cpy_nb = ggml_cuda_get_max_cpy_bytes();
     constexpr int cpy_ne = cpy_nb / 4;
 
@@ -595,6 +651,19 @@ static __device__ __forceinline__ void flash_attn_tile_iter(
     static_assert(cpw % KQ_cs == 0, "bad KQ_cs");
     const int k_VKQ_sup = k_VKQ_max - k_VKQ_0; // k supremum, only smaller k values have valid KV data
 
+    static_assert(DV <= DKQ, "bad DV");
+    static_assert(DV % nbatch_K == 0 || (nbatch_K % 3 == 0 && DV % (nbatch_K*2/3) == 0), "bad nbatch_K");
+    constexpr int nbatch_V = (DV % nbatch_K == 0 ? nbatch_K : nbatch_K*2/3) * nbatch_fa / DV; // Number of V columns that fit in SRAM for K.
+    static_assert(nbatch_fa % nbatch_V == 0, "bad nbatch_V");
+    static_assert(nbatch_V % np == 0, "bad nbatch_V");
+
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+    // Keep the first experiment narrow to the D=256 path used by the target model.
+    constexpr bool use_gfx906_prefetch = DKQ == 256 && DV == 256;
+#else
+    constexpr bool use_gfx906_prefetch = false;
+#endif
+
     float KQ_max_new[cpw];
 #pragma unroll
     for (int jc0 = 0; jc0 < cpw; ++jc0) {
@@ -607,8 +676,22 @@ static __device__ __forceinline__ void flash_attn_tile_iter(
     constexpr int nbatch_K_last = DKQ % nbatch_K;
 #pragma unroll
     for (int k_KQ_0 = 0; k_KQ_0 < DKQ - nbatch_K_last; k_KQ_0 += nbatch_K) {
+        const flash_attn_tile_prefetch * K_prefetched = nullptr;
+        if constexpr (use_gfx906_prefetch) {
+            if (k_KQ_0 == 0 && has_prefetched_K) {
+                K_prefetched = prefetch;
+            }
+        }
+
         flash_attn_tile_iter_KQ<warp_size, nwarps, ncols1, ncols2, DKQ, nbatch_fa, nbatch_K, use_logit_softcap, oob_check>(
-            Q_tmp, K_h2, KV_tmp, stride_K2, k_VKQ_0, k_VKQ_sup, k_KQ_0, KQ_acc);
+            Q_tmp, K_h2, KV_tmp, stride_K2, k_VKQ_0, k_VKQ_sup, k_KQ_0, KQ_acc, K_prefetched);
+
+        if constexpr (use_gfx906_prefetch) {
+            if (k_KQ_0 == 0) {
+                *prefetch = flash_attn_tile_prefetch_fragment<warp_size, nbatch_V, DV>(
+                    V_h2 + int64_t(k_VKQ_0)*stride_V2, stride_V2, k_VKQ_sup);
+            }
+        }
     }
     if (nbatch_K_last > 0) {
         constexpr int k_KQ_0 = DKQ - nbatch_K_last;
@@ -711,16 +794,25 @@ static __device__ __forceinline__ void flash_attn_tile_iter(
     }
 
     // VKQ = V @ KQ matrix multiplication:
-    static_assert(DV <= DKQ, "bad DV");
-    static_assert(DV % nbatch_K == 0 || (nbatch_K % 3 == 0 && DV % (nbatch_K*2/3) == 0), "bad nbatch_K");
-    constexpr int nbatch_V = (DV % nbatch_K == 0 ? nbatch_K : nbatch_K*2/3) * nbatch_fa / DV; // Number of V columns that fit in SRAM for K.
-    static_assert(nbatch_fa % nbatch_V == 0, "bad nbatch_V");
-    static_assert(nbatch_V % np == 0, "bad nbatch_V");
 #pragma unroll
     for (int k0 = 0; k0 < nbatch_fa; k0 += nbatch_V) {
+        const flash_attn_tile_prefetch * V_prefetched = nullptr;
+        if constexpr (use_gfx906_prefetch) {
+            if (k0 == 0) {
+                V_prefetched = prefetch;
+            }
+        }
+
         flash_attn_tile_load_tile<warp_size, nwarps, nbatch_V, DV, 0, oob_check>
-            (V_h2 + int64_t(k_VKQ_0 + k0)*stride_V2, KV_tmp, stride_V2, k_VKQ_sup - k0);
+            (V_h2 + int64_t(k_VKQ_0 + k0)*stride_V2, KV_tmp, stride_V2, k_VKQ_sup - k0, V_prefetched);
         __syncthreads();
+
+        if constexpr (use_gfx906_prefetch) {
+            if (k0 == 0 && k_VKQ_next < k_VKQ_max) {
+                *prefetch = flash_attn_tile_prefetch_fragment<warp_size, nbatch_fa, nbatch_K>(
+                    K_h2 + int64_t(k_VKQ_next)*stride_K2, stride_K2, k_VKQ_max - k_VKQ_next);
+            }
+        }
 
 #ifdef FAST_FP16_AVAILABLE
 #pragma unroll
@@ -952,29 +1044,39 @@ static __global__ void flash_attn_tile(
 
     // Main loop over KV cache:
     const int k_VKQ_max = KV_max ? KV_max[sequence*gridDim.x + blockIdx.x] : ne11;
+    flash_attn_tile_prefetch prefetch = {};
+    bool has_prefetched_K = false;
+
     if (ncols2 == 1) {
         // Branch with out-of-bounds checks.
         int k_VKQ_0 = blockIdx.y*nbatch_fa;
         while (k_VKQ_0 < k_VKQ_max - nbatch_fa) {
             constexpr bool oob_check = false;
+            const int k_VKQ_next = k_VKQ_0 + gridDim.y*nbatch_fa;
             flash_attn_tile_iter<warp_size, nwarps, ncols1, ncols2, DKQ, DV, nbatch_fa, nbatch_K, use_logit_softcap, oob_check>
                 (Q_tmp, K_h2, V_h2, maskh, ne01, logit_softcap, slope, KQ, KV_tmp,
-                stride_K2, stride_V2, stride_mask, KQ_max, KQ_sum, VKQ, k_VKQ_0, k_VKQ_max, col_Q_0);
-            k_VKQ_0 += gridDim.y*nbatch_fa;
+                stride_K2, stride_V2, stride_mask, KQ_max, KQ_sum, VKQ, k_VKQ_0, k_VKQ_max, col_Q_0,
+                &prefetch, has_prefetched_K, k_VKQ_next);
+            has_prefetched_K = k_VKQ_next < k_VKQ_max;
+            k_VKQ_0 = k_VKQ_next;
         }
         if (k_VKQ_0 < k_VKQ_max) {
             constexpr bool oob_check = true;
             flash_attn_tile_iter<warp_size, nwarps, ncols1, ncols2, DKQ, DV, nbatch_fa, nbatch_K, use_logit_softcap, oob_check>
                 (Q_tmp, K_h2, V_h2, maskh, ne01, logit_softcap, slope, KQ, KV_tmp,
-                stride_K2, stride_V2, stride_mask, KQ_max, KQ_sum, VKQ, k_VKQ_0, k_VKQ_max, col_Q_0);
+                stride_K2, stride_V2, stride_mask, KQ_max, KQ_sum, VKQ, k_VKQ_0, k_VKQ_max, col_Q_0,
+                &prefetch, has_prefetched_K, k_VKQ_max);
         }
     } else {
         // Branch without out-of-bounds checks.
         for (int k_VKQ_0 = blockIdx.y*nbatch_fa; k_VKQ_0 < k_VKQ_max; k_VKQ_0 += gridDim.y*nbatch_fa) {
             constexpr bool oob_check = false;
+            const int k_VKQ_next = k_VKQ_0 + gridDim.y*nbatch_fa;
             flash_attn_tile_iter<warp_size, nwarps, ncols1, ncols2, DKQ, DV, nbatch_fa, nbatch_K, use_logit_softcap, oob_check>
                 (Q_tmp, K_h2, V_h2, maskh, ne01, logit_softcap, slope, KQ, KV_tmp,
-                stride_K2, stride_V2, stride_mask, KQ_max, KQ_sum, VKQ, k_VKQ_0, k_VKQ_max, col_Q_0);
+                stride_K2, stride_V2, stride_mask, KQ_max, KQ_sum, VKQ, k_VKQ_0, k_VKQ_max, col_Q_0,
+                &prefetch, has_prefetched_K, k_VKQ_next);
+            has_prefetched_K = k_VKQ_next < k_VKQ_max;
         }
     }
 
