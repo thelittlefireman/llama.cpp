@@ -373,6 +373,20 @@ static constexpr __device__ int ggml_cuda_fattn_tile_get_nbatch_K(const int DKQ,
     return (ggml_cuda_fattn_tile_get_config(DKQ, DV, ncols) >> 23) & ((1 << 9) - 1);
 }
 
+template<int DKQ, int DV, int ncols1, int ncols2>
+static constexpr __device__ bool ggml_cuda_fattn_tile_use_prefetch_gfx906() {
+    return DKQ == 256 && DV == 256 && ncols2 == 4 && (ncols1 == 1 || ncols1 == 8);
+}
+
+template<int DKQ, int DV, int ncols1, int ncols2>
+static constexpr __device__ bool ggml_cuda_fattn_tile_use_prefetch() {
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+    return ggml_cuda_fattn_tile_use_prefetch_gfx906<DKQ, DV, ncols1, ncols2>();
+#else
+    return false;
+#endif
+}
+
 // TODO: deduplicate with mma-f16
 // Small software-pipeline stage: keep one 16-byte global load per lane in registers.
 
@@ -653,12 +667,7 @@ static __device__ __forceinline__ int4 flash_attn_tile_iter(
     static_assert(nbatch_fa % nbatch_V == 0, "bad nbatch_V");
     static_assert(nbatch_V % np == 0, "bad nbatch_V");
 
-#if defined(GGML_USE_HIP) && defined(__gfx906__)
-    // Keep the first experiment narrow to the D=256 path used by the target model.
-    constexpr bool use_gfx906_prefetch = DKQ == 256 && DV == 256;
-#else
-    constexpr bool use_gfx906_prefetch = false;
-#endif
+    constexpr bool use_prefetch = ggml_cuda_fattn_tile_use_prefetch<DKQ, DV, ncols1, ncols2>();
 
     float KQ_max_new[cpw];
 #pragma unroll
@@ -673,11 +682,11 @@ static __device__ __forceinline__ int4 flash_attn_tile_iter(
     constexpr int nbatch_K_last = DKQ % nbatch_K;
 #pragma unroll
     for (int k_KQ_0 = 0; k_KQ_0 < DKQ - nbatch_K_last; k_KQ_0 += nbatch_K) {
-        const bool use_prefetched_K = use_gfx906_prefetch && k_KQ_0 == 0 && has_prefetched_K;
+        const bool use_prefetched_K = use_prefetch && k_KQ_0 == 0 && has_prefetched_K;
         flash_attn_tile_iter_KQ<warp_size, nwarps, ncols1, ncols2, DKQ, nbatch_fa, nbatch_K, use_logit_softcap, oob_check>(
             Q_tmp, K_h2, KV_tmp, stride_K2, k_VKQ_0, k_VKQ_sup, k_KQ_0, KQ_acc, prefetch, use_prefetched_K);
 
-        if constexpr (use_gfx906_prefetch) {
+        if constexpr (use_prefetch) {
             if (k_KQ_0 == 0) {
                 next_prefetch = flash_attn_tile_prefetch_fragment<warp_size, nbatch_V, DV>(
                     V_h2 + int64_t(k_VKQ_0)*stride_V2, stride_V2, k_VKQ_sup);
@@ -787,12 +796,12 @@ static __device__ __forceinline__ int4 flash_attn_tile_iter(
     // VKQ = V @ KQ matrix multiplication:
 #pragma unroll
     for (int k0 = 0; k0 < nbatch_fa; k0 += nbatch_V) {
-        const bool use_prefetched_V = use_gfx906_prefetch && k0 == 0;
+        const bool use_prefetched_V = use_prefetch && k0 == 0;
         flash_attn_tile_load_tile<warp_size, nwarps, nbatch_V, DV, 0, oob_check>
             (V_h2 + int64_t(k_VKQ_0 + k0)*stride_V2, KV_tmp, stride_V2, k_VKQ_sup - k0, next_prefetch, use_prefetched_V);
         __syncthreads();
 
-        if constexpr (use_gfx906_prefetch) {
+        if constexpr (use_prefetch) {
             if (k0 == 0 && k_VKQ_next < k_VKQ_max) {
                 next_prefetch = flash_attn_tile_prefetch_fragment<warp_size, nbatch_fa, nbatch_K>(
                     K_h2 + int64_t(k_VKQ_next)*stride_K2, stride_K2, k_VKQ_max - k_VKQ_next);
