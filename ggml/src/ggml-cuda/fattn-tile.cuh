@@ -749,7 +749,7 @@ static __device__ __forceinline__ void flash_attn_tile_iter(
 #if defined(GGML_USE_HIP) && defined(__gfx906__)
 #pragma unroll
             for (int jc_VKQ_0 = 0; jc_VKQ_0 < cpw; ++jc_VKQ_0) {
-                if (KQ_k[jc_VKQ_0].x == 0.0f) {
+                if (__half2float(KQ_k[jc_VKQ_0].x) == 0.0f) {
                     continue;
                 }
 #pragma unroll
