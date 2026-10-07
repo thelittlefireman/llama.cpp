@@ -750,6 +750,11 @@ static __device__ __forceinline__ void flash_attn_tile_iter(
             for (int i0 = 0; i0 < DVp/2; i0 += warp_size) {
 #pragma unroll
                 for (int jc_VKQ_0 = 0; jc_VKQ_0 < cpw; ++jc_VKQ_0) {
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+                    if (__half2float(KQ_k[jc_VKQ_0].x) == 0.0f) {
+                        continue;
+                    }
+#endif // defined(GGML_USE_HIP) && defined(__gfx906__)
                     VKQ[jc_VKQ_0*((DVp/2)/warp_size) + i0/warp_size] += V_k[i0/warp_size]*KQ_k[jc_VKQ_0];
                 }
             }
