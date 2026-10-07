@@ -746,6 +746,18 @@ static __device__ __forceinline__ void flash_attn_tile_iter(
                 }
             }
 
+#if defined(GGML_USE_HIP) && defined(__gfx906__)
+#pragma unroll
+            for (int jc_VKQ_0 = 0; jc_VKQ_0 < cpw; ++jc_VKQ_0) {
+                if (KQ_k[jc_VKQ_0].x == 0.0f) {
+                    continue;
+                }
+#pragma unroll
+                for (int i0 = 0; i0 < DVp/2; i0 += warp_size) {
+                    VKQ[jc_VKQ_0*((DVp/2)/warp_size) + i0/warp_size] += V_k[i0/warp_size]*KQ_k[jc_VKQ_0];
+                }
+            }
+#else
 #pragma unroll
             for (int i0 = 0; i0 < DVp/2; i0 += warp_size) {
 #pragma unroll
@@ -753,6 +765,7 @@ static __device__ __forceinline__ void flash_attn_tile_iter(
                     VKQ[jc_VKQ_0*((DVp/2)/warp_size) + i0/warp_size] += V_k[i0/warp_size]*KQ_k[jc_VKQ_0];
                 }
             }
+#endif // defined(GGML_USE_HIP) && defined(__gfx906__)
         }
 #else
 #pragma unroll
