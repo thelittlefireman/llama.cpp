@@ -24,7 +24,7 @@ static __global__ void flash_attn_mask_to_sparse_indices_hip(
     const half * mask_row = mask + sequence*s33 + query*s31;
     __shared__ int wave_offsets[nwaves];
     __shared__ int row_count;
-    __shared__ int chunk_count;
+    __shared__ int chunk_base;
 
     if (tid == 0) {
         row_count = 0;
@@ -51,20 +51,15 @@ static __global__ void flash_attn_mask_to_sparse_indices_hip(
                 wave_offsets[iw] = offset;
                 offset += count;
             }
-            chunk_count = offset;
+            chunk_base = row_count;
+            row_count += offset;
         }
         __syncthreads();
 
-        const int dst = row_count + wave_offsets[wave] + __popcll(selected_mask & lane_mask);
+        const int dst = chunk_base + wave_offsets[wave] + __popcll(selected_mask & lane_mask);
         if (selected && dst < n_kv_max) {
             indices[int64_t(list)*n_kv_max + dst] = i;
         }
-        __syncthreads();
-
-        if (tid == 0) {
-            row_count += chunk_count;
-        }
-        __syncthreads();
     }
 
     if (tid == 0) {
