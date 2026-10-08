@@ -1177,7 +1177,7 @@ static void launch_fattn_tile_switch_ncols1(ggml_backend_cuda_context & ctx, ggm
         const int n_kv_max = ggml_get_op_params_i32(dst, 4);
         if (cc == GGML_CUDA_CC_VEGA20 && Q->ne[1] == 1 && mask &&
             mask->ne[0] == K->ne[1] && mask->ne[1] >= Q->ne[1] && mask->ne[2] == 1 &&
-            n_kv_max > 0 && n_kv_max <= K->ne[1]/4 && K->ne[1] >= 4096) {
+            n_kv_max > 0 && n_kv_max <= K->ne[1]/4) {
             const int nwarps = ggml_cuda_fattn_tile_get_nthreads(DKQ, DV, ncols2, cc) / warp_size;
             const int nbatch_fa = ggml_cuda_fattn_tile_get_nbatch_fa(DKQ, DV, ncols2, cc);
             fattn_kernel_t fattn_kernel = flash_attn_tile<DKQ, DV, 1, ncols2, use_logit_softcap, true>;
