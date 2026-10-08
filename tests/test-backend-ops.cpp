@@ -11628,6 +11628,13 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
         test_cases.emplace_back(new test_flash_attn_ext(256, 256, 2, {16, 1}, kv, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16, {0, 1, 2, 3}, true, false, 2048));
     }
 
+    // Sparse decode coverage when one compacted list is reused by multiple GQA tiles.
+    for (int64_t kv : {16384, 32768}) {
+        for (int gqa : {6, 10, 20, 24}) {
+            test_cases.emplace_back(new test_flash_attn_ext(256, 256, 2, {gqa, 1}, kv, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16, {0, 1, 2, 3}, true, false, 2048));
+        }
+    }
+
     // Sparse decode break-even coverage.
     test_cases.emplace_back(new test_flash_attn_ext(256, 256, 2, {16, 1}, 24576, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16, {0, 1, 2, 3}, true, false, 2048));
     for (int gqa : {2, 4, 8}) {
