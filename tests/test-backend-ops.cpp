@@ -11660,6 +11660,9 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
         test_cases.emplace_back(new test_flash_attn_ext(64, 64, 2, {12, 1}, kv, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16, {0, 1, 2, 3}, true, false, 2048));
     }
 
+    // Sparse decode short-context coverage for 64/64 at the 25% threshold.
+    test_cases.emplace_back(new test_flash_attn_ext(64, 64, 2, {12, 1}, 512, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16, {0, 1, 2, 3}, true, false, 128));
+
     // Sparse decode coverage for the remaining FATTN tile geometries.
     for (int64_t kv : {16384, 32768, 65536, 131072, 262144}) {
         test_cases.emplace_back(new test_flash_attn_ext( 40,  40, 2, {12, 1}, kv, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16, {0, 1, 2, 3}, true, false, 2048));
