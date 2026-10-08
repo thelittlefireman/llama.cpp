@@ -11682,7 +11682,7 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
     }
 
     // Extra reuse coverage for the asymmetric tile geometries.
-    for (int64_t kv : {65536, 131072, 262144}) {
+    for (int64_t kv : {16384, 32768, 65536, 131072, 262144}) {
         test_cases.emplace_back(new test_flash_attn_ext(192, 128, 2, {32, 1}, kv, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16, {0, 1, 2, 3}, true, false, 2048));
         test_cases.emplace_back(new test_flash_attn_ext(320, 256, 1, {64, 1}, kv, 1, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16, {0, 1, 2, 3}, true, false, 2048));
     }
