@@ -1164,14 +1164,16 @@ static void launch_fattn_tile_switch_ncols1(ggml_backend_cuda_context & ctx, ggm
 
 #ifdef GGML_USE_HIP
     // Sparse gather is useful for single-query decode with a sufficiently sparse mask.
-    if constexpr (DKQ == 256 && DV == 256 && ncols2 > 1 && !use_logit_softcap &&
+    if constexpr (((DKQ == 64 && DV == 64) || (DKQ == 128 && DV == 128) || (DKQ == 256 && DV == 256) ||
+                   (DKQ == 512 && DV == 512) || (DKQ == 576 && DV == 512)) &&
+                  ncols2 > 1 && !use_logit_softcap &&
                   ggml_cuda_fattn_tile_get_config_amd(DKQ, DV, ncols2) != 0 &&
                   ggml_cuda_fattn_tile_get_config_amd_rdna(DKQ, DV, ncols2) != 0) {
         const ggml_tensor * K    = dst->src[1];
         const ggml_tensor * mask = dst->src[3];
         const int gqa_ratio = Q->ne[2] / K->ne[2];
         const int n_kv_max = ggml_get_op_params_i32(dst, 4);
-        if (cc == GGML_CUDA_CC_VEGA20 && Q->ne[1] == 1 && gqa_ratio > ncols2 && mask &&
+        if (cc == GGML_CUDA_CC_VEGA20 && Q->ne[1] == 1 && mask &&
             mask->ne[0] == K->ne[1] && mask->ne[1] >= Q->ne[1] && mask->ne[2] == 1 &&
             n_kv_max > 0 && n_kv_max <= K->ne[1]/4 && K->ne[1] >= 4096) {
             const int nwarps = ggml_cuda_fattn_tile_get_nthreads(DKQ, DV, ncols2, cc) / warp_size;
