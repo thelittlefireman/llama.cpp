@@ -5,6 +5,74 @@
 #include "fattn-vec.cuh"
 #include "fattn.cuh"
 
+#if defined(GGML_USE_HIP)
+// Compact the visible KV positions for a single query in their original order.
+__launch_bounds__(256, 1)
+static __global__ void flash_attn_mask_to_sparse_indices_hip(
+        const half * mask, int32_t * indices, int32_t * counts,
+        const int n_kv, const int n_kv_max, const int64_t s31, const int64_t s33) {
+    constexpr int wave_size = 64;
+    constexpr int nwaves = 256 / wave_size;
+
+    const int tid = threadIdx.x;
+    const int lane = tid % wave_size;
+    const int wave = tid / wave_size;
+    const int query = blockIdx.x;
+    const int sequence = blockIdx.y;
+    const int list = sequence*gridDim.x + query;
+
+    const half * mask_row = mask + sequence*s33 + query*s31;
+    __shared__ int wave_offsets[nwaves];
+    __shared__ int row_count;
+    __shared__ int chunk_count;
+
+    if (tid == 0) {
+        row_count = 0;
+    }
+    __syncthreads();
+
+    for (int i0 = 0; i0 < n_kv; i0 += 256) {
+        const int i = i0 + wave*wave_size + lane;
+        const bool selected = i < n_kv && isfinite(__half2float(mask_row[i]));
+        const uint64_t selected_mask = __ballot(selected);
+        const uint64_t lane_mask = lane == 0 ? 0 : (uint64_t(1) << lane) - 1;
+        const int wave_count = __popcll(selected_mask);
+
+        if (lane == 0) {
+            wave_offsets[wave] = wave_count;
+        }
+        __syncthreads();
+
+        if (tid == 0) {
+            int offset = 0;
+#pragma unroll
+            for (int iw = 0; iw < nwaves; ++iw) {
+                const int count = wave_offsets[iw];
+                wave_offsets[iw] = offset;
+                offset += count;
+            }
+            chunk_count = offset;
+        }
+        __syncthreads();
+
+        const int dst = row_count + wave_offsets[wave] + __popcll(selected_mask & lane_mask);
+        if (selected && dst < n_kv_max) {
+            indices[int64_t(list)*n_kv_max + dst] = i;
+        }
+        __syncthreads();
+
+        if (tid == 0) {
+            row_count += chunk_count;
+        }
+        __syncthreads();
+    }
+
+    if (tid == 0) {
+        counts[list] = min(row_count, n_kv_max);
+    }
+}
+#endif // defined(GGML_USE_HIP)
+
 #if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA)
 // one list per group of ncols1 queries: a column is selected if any query of the group can see it
 template <int ncols1, bool oob>
@@ -105,7 +173,15 @@ static __global__ void flash_attn_mask_to_sparse_indices(
 
 void ggml_cuda_flash_attn_ext_compact_mask(
         const ggml_tensor * mask, int32_t * indices, int32_t * counts, int32_t n_queries, int32_t ncols1, int32_t n_kv_max, cudaStream_t stream) {
-#if defined(GGML_USE_HIP) || defined(GGML_USE_MUSA)
+#if defined(GGML_USE_HIP)
+    GGML_ASSERT(ncols1 == 1);
+    const dim3 blocks_num(n_queries, mask->ne[3], 1);
+    const dim3 block_dim(256, 1, 1);
+    const ggml_cuda_kernel_launch_params launch_params(blocks_num, block_dim, 0, stream);
+    ggml_cuda_kernel_launch(flash_attn_mask_to_sparse_indices_hip, launch_params,
+        (const half *) mask->data, indices, counts, int(mask->ne[0]), n_kv_max, mask->nb[1]/sizeof(half), mask->nb[3]/sizeof(half));
+    CUDA_CHECK(cudaGetLastError());
+#elif defined(GGML_USE_MUSA)
     GGML_UNUSED_VARS(mask, indices, counts, n_queries, ncols1, n_kv_max, stream);
     GGML_ABORT("sparse flash attention is only supported on NVIDIA CUDA");
 #else
