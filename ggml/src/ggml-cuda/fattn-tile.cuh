@@ -1164,7 +1164,7 @@ static void launch_fattn_tile_switch_ncols1(ggml_backend_cuda_context & ctx, ggm
 
 #ifdef GGML_USE_HIP
     // Sparse gather is useful for single-query decode with a sufficiently sparse mask.
-    if constexpr (DKQ <= 256 && DV <= 256 && ncols2 > 1 && !use_logit_softcap &&
+    if constexpr (DKQ == 256 && DV == 256 && ncols2 > 1 && !use_logit_softcap &&
                   ggml_cuda_fattn_tile_get_config_amd(DKQ, DV, ncols2) != 0 &&
                   ggml_cuda_fattn_tile_get_config_amd_rdna(DKQ, DV, ncols2) != 0) {
         const ggml_tensor * K    = dst->src[1];
