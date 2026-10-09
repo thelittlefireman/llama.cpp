@@ -1176,16 +1176,30 @@ static void launch_fattn_tile_switch_ncols1(ggml_backend_cuda_context & ctx, ggm
         const int gqa_ratio = Q->ne[2] / K->ne[2];
         const int n_kv_max = ggml_get_op_params_i32(dst, 4);
         int64_t min_kv_sparse = 0;
+        bool allow_sparse = true;
         if constexpr (DKQ == 72 && DV == 72) {
             min_kv_sparse = 32768;
         } else if constexpr ((DKQ == 80 && DV == 80) || (DKQ == 96 && DV == 96) || (DKQ == 112 && DV == 112)) {
             min_kv_sparse = 16384;
+        } else if constexpr (DKQ == 128 && DV == 128) {
+            min_kv_sparse = 32768;
+        } else if constexpr (DKQ == 192 && DV == 128) {
+            min_kv_sparse = 16384;
         } else if constexpr (DKQ == 256 && DV == 256) {
-            min_kv_sparse = 4096;
+            min_kv_sparse = gqa_ratio == 2 ? 32768 : 4096;
+        } else if constexpr (DKQ == 320 && DV == 256) {
+            min_kv_sparse = 65536;
+            allow_sparse = gqa_ratio >= 64;
+        } else if constexpr (DKQ == 512 && DV == 512) {
+            min_kv_sparse = 65536;
+            allow_sparse = gqa_ratio >= 16;
+        } else if constexpr (DKQ == 576 && DV == 512) {
+            min_kv_sparse = 65536;
+            allow_sparse = gqa_ratio >= 32;
         }
         if (cc == GGML_CUDA_CC_VEGA20 && Q->ne[1] == 1 && mask &&
             mask->ne[0] == K->ne[1] && mask->ne[1] >= Q->ne[1] && mask->ne[2] == 1 &&
-            n_kv_max > 0 && n_kv_max <= K->ne[1]/4 && K->ne[1] >= min_kv_sparse) {
+            n_kv_max > 0 && n_kv_max <= K->ne[1]/4 && allow_sparse && K->ne[1] >= min_kv_sparse) {
             const int nwarps = ggml_cuda_fattn_tile_get_nthreads(DKQ, DV, ncols2, cc) / warp_size;
             const int nbatch_fa = ggml_cuda_fattn_tile_get_nbatch_fa(DKQ, DV, ncols2, cc);
             fattn_kernel_t fattn_kernel = flash_attn_tile<DKQ, DV, 1, ncols2, use_logit_softcap, true>;
