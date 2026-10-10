@@ -7,6 +7,7 @@ on:
     paths:
       - .github/workflows/gfx906-fmac-dpp-scan.yml
       - scripts/hip/analyze-gfx906-fmac-dpp.py
+      - scripts/hip/analyze-gfx906-bpermute-address.py
   workflow_dispatch:
 
 permissions:
@@ -49,7 +50,11 @@ jobs:
         run: |
           mkdir -p gfx906-fmac-report
           python3 scripts/hip/analyze-gfx906-fmac-dpp.py build-gfx906-fmac-scan --out gfx906-fmac-report/gfx906-fmac-dpp
+          python3 scripts/hip/analyze-gfx906-bpermute-address.py build-gfx906-fmac-scan --out gfx906-fmac-report/gfx906-bpermute-address
           cat gfx906-fmac-report/gfx906-fmac-dpp-summary.md >> "$GITHUB_STEP_SUMMARY"
+          printf '\n---\n\n' >> "$GITHUB_STEP_SUMMARY"
+          cat gfx906-fmac-report/gfx906-bpermute-address-summary.md >> "$GITHUB_STEP_SUMMARY"
+          find build-gfx906-fmac-scan -type f \( -name 'mmvq-*-gfx906.s' -o -name 'mmvf-*-gfx906.s' -o -name 'solve-tri-*-gfx906.s' -o -name 'lightning-indexer-*-gfx906.s' \) -print0 | tar --null -czf gfx906-fmac-report/gfx906-selected-isa.tar.gz -T -
 
       - name: Upload ISA analysis
         if: always()
