@@ -1,0 +1,61 @@
+name: gfx906 FMA DPP ISA scan
+
+on:
+  push:
+    branches:
+      - feature_GCN_FMAC_DPP_ISA_SCAN
+    paths:
+      - .github/workflows/gfx906-fmac-dpp-scan.yml
+      - scripts/hip/analyze-gfx906-fmac-dpp.py
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  scan-gfx906:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    container: rocm/dev-ubuntu-24.04:6.4.3-complete
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y build-essential cmake ninja-build git python3 pkg-config libssl-dev libcurl4-openssl-dev
+
+      - name: Configure all HIP kernels for gfx906
+        run: |
+          cmake -S . -B build-gfx906-fmac-scan -G Ninja \
+            -DCMAKE_HIP_COMPILER="$(hipconfig -l)/clang" \
+            -DGPU_TARGETS=gfx906 \
+            -DCMAKE_HIP_ARCHITECTURES=gfx906 \
+            -DGGML_HIP=ON \
+            -DGGML_HIP_EXPORT_METRICS=ON \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_EXAMPLES=OFF \
+            -DLLAMA_BUILD_SERVER=OFF \
+            -DLLAMA_CURL=OFF
+
+      - name: Compile every HIP translation unit
+        run: |
+          cmake --build build-gfx906-fmac-scan --target ggml-hip --parallel 2
+
+      - name: Scan all generated gfx906 assembly
+        run: |
+          mkdir -p gfx906-fmac-report
+          python3 scripts/hip/analyze-gfx906-fmac-dpp.py build-gfx906-fmac-scan --out gfx906-fmac-report/gfx906-fmac-dpp
+          cat gfx906-fmac-report/gfx906-fmac-dpp-summary.md >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload ISA analysis
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gfx906-fmac-dpp-all-kernels
+          path: gfx906-fmac-report/
+          if-no-files-found: warn
+          retention-days: 14
