@@ -66,6 +66,10 @@ def expand(name, inst, definitions, index, block, function, depth=0, chain=None)
             return ("unknown",), trace, False
         return expand(p[n], inst, definitions, k, block, function, depth + 1, trace)
 
+    if op.startswith("v_cndmask_b32") and len(p) >= 4:
+        a, ta, sa = arg(1)
+        b, tb, sb = arg(2)
+        return ("select", a, b), ta + tb[len(trace):], local and sa and sb
     if op.startswith("v_mov_b32"):
         expr, track, trusted = arg(1)
         return expr, track, local and trusted
@@ -116,10 +120,28 @@ def lane_base(expr):
 def address_kind(expr):
     if expr[0] != "shl" or expr[2] != 2:
         return "unknown_address", "", ""
-    x = expr[1]
-    if x[0] != "xor":
-        return "identity" if lane_base(x) else "unknown_address", "", lane_base(x) or ""
-    a, b = x[1:3]
+    index = expr[1]
+    if index[0] == "select":
+        a, b = index[1:3]
+        if b[0] != "xor":
+            return "unknown_address", "", ""
+        first, second = b[1:3]
+        if first[0] == "const":
+            offset, base = first[1], second
+        elif second[0] == "const":
+            offset, base = second[1], first
+        else:
+            return "bounded_xor_unverified", "", ""
+        if a != base or not lane_base(base):
+            return "bounded_xor_unverified", str(offset), lane_base(base) or "unknown_base"
+        if offset in DPP_XOR:
+            return "bounded_xor_direct_dpp", str(offset), lane_base(base)
+        if offset in (4, 16, 32):
+            return "bounded_xor_not_single_dpp", str(offset), lane_base(base)
+        return "bounded_xor_other", str(offset), lane_base(base)
+    if index[0] != "xor":
+        return ("identity" if lane_base(index) else "unknown_address"), "", lane_base(index) or ""
+    a, b = index[1:3]
     if a[0] == "const":
         offset, base = a[1], b
     elif b[0] == "const":
@@ -134,7 +156,6 @@ def address_kind(expr):
     if offset in (4, 16, 32):
         return "xor_not_single_dpp", str(offset), lane
     return "xor_other", str(offset), lane
-
 
 def scan(path, sites, counts):
     inst = []
@@ -178,7 +199,11 @@ def scan(path, sites, counts):
                            for nxt in inst[i + 1:found_index])
         scope = "same_block" if trusted else "cross_block_or_unknown"
         status = "unclassified"
-        if kind == "xor_direct_dpp":
+        if kind == "bounded_xor_direct_dpp":
+            status = "guard_must_be_verified"
+        elif kind == "bounded_xor_not_single_dpp":
+            status = "unsupported_single_dpp"
+        elif kind == "xor_direct_dpp":
             status = ("candidate_verify_exec_and_rounding" if trusted and source_alive and src_in_add and not exec_changed
                       else "manual_review")
         elif kind == "xor_not_single_dpp":
