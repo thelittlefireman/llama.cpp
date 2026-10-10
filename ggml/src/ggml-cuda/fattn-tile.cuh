@@ -235,6 +235,7 @@ static constexpr __host__ __device__ uint32_t ggml_cuda_fattn_tile_get_config_am
 }
 
 static constexpr __host__ __device__ uint32_t ggml_cuda_fattn_tile_get_config_gfx906(const int DKQ, const int DV, const int ncols) {
+    GGML_CUDA_FATTN_TILE_CONFIG_CASE( 64,  64, 64, 256, 2,  64,  32)
     GGML_CUDA_FATTN_TILE_CONFIG_CASE(256, 256, 16, 256, 2,  64,  32)
     GGML_CUDA_FATTN_TILE_CONFIG_CASE(256, 256, 32, 256, 2,  64,  64)
     return ggml_cuda_fattn_tile_get_config_amd(DKQ, DV, ncols);
