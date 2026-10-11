@@ -1,0 +1,136 @@
+name: Q2_K ISA compare (ROCm 7.2.1)
+
+on:
+  push:
+    branches:
+      - todo_q2k_isa_rocm721
+    paths:
+      - .github/workflows/q2k-isa-rocm721.yml
+
+permissions:
+  contents: read
+
+jobs:
+  isa:
+    name: ISA ${{ matrix.arch }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 150
+    container: rocm/dev-ubuntu-22.04:7.2.1
+    strategy:
+      fail-fast: false
+      matrix:
+        arch: [gfx906, gfx908]
+    env:
+      ARCH: ${{ matrix.arch }}
+    steps:
+      - name: Checkout baseline b11350
+        uses: actions/checkout@v4
+        with:
+          repository: thelittlefireman/llama.cpp
+          ref: 254b177307b14d055bbe4c050c9c441a1e06d8a4
+          path: base
+          persist-credentials: false
+
+      - name: Checkout PR d6658bc
+        uses: actions/checkout@v4
+        with:
+          repository: thelittlefireman/llama.cpp
+          ref: d6658bc9c4318f0d1b640da0a855c8e568fc8371
+          path: pr
+          persist-credentials: false
+
+      - name: Dependencies
+        shell: bash
+        run: |
+          apt-get update
+          apt-get install -y build-essential git cmake rocblas-dev hipblas-dev libssl-dev python3 python3-venv python3-pip binutils
+          hipcc --version | tee toolchain.txt
+          /opt/rocm/llvm/bin/clang++ --version | tee -a toolchain.txt
+          printf 'Base: %s\nPR: %s\nTarget: %s\n' "$(git -C base rev-parse HEAD)" "$(git -C pr rev-parse HEAD)" "$ARCH" | tee revisions.txt
+
+      - name: Build both revisions with compiler metrics and ISA
+        shell: bash
+        run: |
+          set -euo pipefail
+          for REV in base pr; do
+            cmake -S "$REV" -B "build-$REV" -DCMAKE_HIP_COMPILER="$(hipconfig -l)/clang" -DGPU_TARGETS="$ARCH" -DGGML_HIP=ON -DGGML_HIP_EXPORT_METRICS=On -DCMAKE_HIP_FLAGS="" -DCMAKE_BUILD_TYPE=Release 2>&1 | tee "cmake-$REV.log"
+            cmake --build "build-$REV" --target ggml-hip -j 2 2>&1 | tee "build-$REV.log"
+          done
+
+      - name: Collect Q2_K assembly and compare instruction patterns
+        shell: bash
+        run: |
+          set -euo pipefail
+          for REV in base pr; do
+            mkdir -p "isa/$REV"
+            find "build-$REV" -type f -name "*-hip-amdgcn-amd-amdhsa-$ARCH.s" -iname "*mmq*" -exec cp -- {} "isa/$REV/" \;
+            echo "$REV: $(find "isa/$REV" -type f -name '*.s' | wc -l) AMDGCN assembly files"
+            test "$(find "isa/$REV" -type f -name '*.s' | wc -l)" -gt 0
+          done
+          python3 - <<'PY'
+          import collections
+          import json
+          import os
+          import pathlib
+          import re
+          import subprocess
+
+          arch = os.environ["ARCH"]
+          interesting = ("v_mfma", "v_dot", "s_waitcnt", "s_cbranch", "s_branch", "ds_", "scratch_", "buffer_", "global_", "flat_", "s_barrier")
+          def extract(path):
+              kernels = {}
+              for file in sorted(path.glob("*.s")):
+                  source = file.read_text(errors="replace")
+                  for match in re.finditer(r"(?m)^(_Z[A-Za-z0-9_.$]+):[ \t]*(?:#.*)?$", source):
+                      symbol = match.group(1)
+                      name = subprocess.run(["c++filt", "-n", symbol], text=True, stdout=subprocess.PIPE, check=True).stdout.strip()
+                      if "mul_mat_q<" not in name or "(ggml_type)10" not in name:
+                          continue
+                      end = re.search(r"(?m)^[ \t]*\.size[ \t]+" + re.escape(symbol) + r"\s*,", source[match.end():])
+                      if not end:
+                          continue
+                      body = source[match.end():match.end() + end.start()]
+                      ops = collections.Counter()
+                      for line in body.splitlines():
+                          op = re.match(r"^[ \t]*([a-z][a-z0-9_]+)\b", line)
+                          if op and op.group(1).startswith(("s_", "v_", "ds_", "buffer_", "flat_", "global_", "scratch_")):
+                              ops[op.group(1)] += 1
+                      kernels[symbol] = {"name": name, "file": file.name, "total": sum(ops.values()), "ops": dict(ops)}
+              return kernels
+
+          base = extract(pathlib.Path("isa/base"))
+          pr = extract(pathlib.Path("isa/pr"))
+          pathlib.Path("isa/base.json").write_text(json.dumps(base, indent=2))
+          pathlib.Path("isa/pr.json").write_text(json.dumps(pr, indent=2))
+          def count(ops, prefix):
+              return sum(v for k, v in ops.items() if k.startswith(prefix))
+          labels = [("instructions", None), ("MFMA", "v_mfma"), ("DOT", "v_dot"), ("LDS", "ds_"), ("scratch", "scratch_"), ("buffer", "buffer_"), ("global", "global_"), ("flat", "flat_"), ("waitcnt", "s_waitcnt"), ("branches", "s_branch"), ("cbranches", "s_cbranch"), ("barriers", "s_barrier")]
+          with open("isa/pattern-diff.tsv", "w") as f:
+              f.write("kernel\t" + "\t".join(k + "_base\t" + k + "_pr" for k, _ in labels) + "\n")
+              for symbol in sorted(set(base) & set(pr), key=lambda k: base[k]["name"]):
+                  b, p = base[symbol], pr[symbol]
+                  vals = []
+                  for _, prefix in labels:
+                      vals += [str(b["total"] if prefix is None else count(b["ops"], prefix)), str(p["total"] if prefix is None else count(p["ops"], prefix))]
+                  f.write(b["name"] + "\t" + "\t".join(vals) + "\n")
+          print(f"Found Q2_K kernels: baseline={len(base)}, PR={len(pr)}, paired={len(set(base) & set(pr))}")
+          print(pathlib.Path("isa/pattern-diff.tsv").read_text()[:16000])
+          if not set(base) & set(pr):
+              raise SystemExit("No paired Q2_K kernels found: inspect the assembly filenames / symbols.")
+          PY
+
+      - name: Upload assembly and pattern comparison
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: q2k-isa-rocm721-${{ matrix.arch }}
+          path: |
+            toolchain.txt
+            revisions.txt
+            cmake-base.log
+            cmake-pr.log
+            build-base.log
+            build-pr.log
+            isa/
+          if-no-files-found: warn
+          retention-days: 14
