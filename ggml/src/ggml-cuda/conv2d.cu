@@ -388,7 +388,7 @@ void ggml_cuda_op_conv2d(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const bool force_simt  = amd_simt && simt_mode && std::strcmp(simt_mode, "simt") == 0;
     const bool force_legacy = amd_simt && simt_mode && std::strcmp(simt_mode, "legacy") == 0;
     const bool use_simt    = GGML_CUDA_CC_IS_MTHREADS(device.cc) ||
-                             (amd_simt && !force_legacy && (force_simt || (IC * KW * KH >= 32 && OC >= 32)));
+                             (amd_simt && !force_legacy && (force_simt || (IC * KW * KH >= 32 && OC >= 24)));
     const bool pointwise  = KW == 1 && KH == 1 && ST_X == 1 && ST_Y == 1 && PD_X == 0 && PD_Y == 0;
     const bool use_blas   = pointwise && fast_fp16_hardware_available(device.cc);
     // Short reductions on small maps do not amortize conversion and launch costs.
