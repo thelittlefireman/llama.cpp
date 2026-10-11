@@ -2,6 +2,9 @@
 #include "convert.cuh"
 #include "mma.cuh"
 
+#include <cstdlib>
+#include <cstring>
+
 struct conv_params {
     const int64_t IW, IH;
     const int64_t OW, OH;
@@ -379,8 +382,13 @@ void ggml_cuda_op_conv2d(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const bool   use_mma =
         turing_mma_available(device.cc) || amd_wmma_available(device.cc) || amd_mfma_available(device.cc);
     // Devices without a native fragment implementation in mma.cuh can share the tiling.
-    const bool use_simt   = GGML_CUDA_CC_IS_MTHREADS(device.cc) ||
-                            (GGML_CUDA_CC_IS_AMD(device.cc) && !use_mma && IC * KW * KH >= 64);
+    // Benchmark override for AMD devices without matrix instructions.
+    static const char * simt_mode = std::getenv("GGML_CUDA_CONV2D_SIMT");
+    const bool amd_simt    = GGML_CUDA_CC_IS_AMD(device.cc) && !use_mma;
+    const bool force_simt  = amd_simt && simt_mode && std::strcmp(simt_mode, "simt") == 0;
+    const bool force_legacy = amd_simt && simt_mode && std::strcmp(simt_mode, "legacy") == 0;
+    const bool use_simt    = GGML_CUDA_CC_IS_MTHREADS(device.cc) ||
+                             (amd_simt && !force_legacy && (force_simt || IC * KW * KH >= 64));
     const bool pointwise  = KW == 1 && KH == 1 && ST_X == 1 && ST_Y == 1 && PD_X == 0 && PD_Y == 0;
     const bool use_blas   = pointwise && fast_fp16_hardware_available(device.cc);
     // Short reductions on small maps do not amortize conversion and launch costs.
@@ -390,7 +398,7 @@ void ggml_cuda_op_conv2d(ggml_backend_cuda_context & ctx, ggml_tensor * dst) {
     const int64_t padded_w = IW + 2 * int64_t(PD_X), padded_h = IH + 2 * int64_t(PD_Y);
     const bool    padded_fits = padded_w > 0 && padded_w <= limit && padded_h > 0 && padded_h <= limit &&
                              padded_w * padded_h <= limit && IC * B <= limit / (padded_w * padded_h);
-    if (kernel->type == GGML_TYPE_F16 && (use_mma || use_blas || use_simt) && (use_blas || !small_conv) &&
+    if (kernel->type == GGML_TYPE_F16 && (use_mma || use_blas || use_simt) && (use_blas || !small_conv || force_simt) &&
         ggml_nelements(input) <= limit && ggml_nelements(kernel) <= limit && total <= limit && padded_fits &&
         PD_X >= 0 && PD_Y >= 0 && ST_X > 0 && ST_Y > 0 && DL_X > 0 && DL_Y > 0 &&
         (OW - 1) * ST_X + (KW - 1) * DL_X < padded_w && (OH - 1) * ST_Y + (KH - 1) * DL_Y < padded_h &&
