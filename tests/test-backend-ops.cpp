@@ -12017,6 +12017,13 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
         }
     }
 
+    // CONV_2D F16 around the AMD SIMT reduction threshold (K = IC * 2 * 2).
+    for (int ic : {8, 12, 15, 16, 17, 20, 24, 32}) {
+        for (int oc : {8, 32, 64, 128}) {
+            test_cases.emplace_back(new test_conv_2d({128, 128, ic, 1}, {2, 2, ic, oc}, GGML_TYPE_F16));
+        }
+    }
+
     struct conv3d_perf_case {
         int N, IC, ID, IH, IW, OC, KD, KH, KW, s0, s1, s2, p0, p1, p2, d0, d1, d2;
     };
