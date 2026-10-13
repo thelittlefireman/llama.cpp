@@ -1,0 +1,83 @@
+name: Compare gfx906 ROCm 7.2.4 vs 10.1 ISA
+on:
+  push:
+    branches: [todo_ci_gfx906_rocm724_vs101_isa]
+    paths: [.github/workflows/todo-gfx906-rocm-isa.yml]
+permissions:
+  contents: read
+concurrency:
+  group: gfx906-isa-rocm-724-101
+  cancel-in-progress: false
+jobs:
+  build-isa:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 180
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - key: rocm-7.2.4
+            image: rocm/dev-ubuntu-22.04:7.2.4-complete
+          - key: rocm-10.1
+            image: rocm/dev-ubuntu-22.04:10.1.0-full
+    env:
+      IMAGE: ${{ matrix.image }}
+      KEY: ${{ matrix.key }}
+      MASTER_SHA: c83f3058b6f876f2f7e6ccbada858b2446860c85
+    steps:
+      - name: Checkout exact master commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ env.MASTER_SHA }}
+          persist-credentials: false
+      - name: Free disk space for ROCm container
+        shell: bash
+        run: |
+          set -euxo pipefail
+          df -h /
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/hostedtoolcache /usr/local/share/powershell /opt/az /usr/local/lib/node_modules || true
+          docker system prune --all --force || true
+          df -h /
+      - name: Build HIP gfx906 and capture metrics
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p "artifacts/$KEY"
+          git rev-parse HEAD | tee "artifacts/$KEY/source-commit.txt"
+          printf '%s\n' "$IMAGE" > "artifacts/$KEY/docker-image.txt"
+          docker pull "$IMAGE"
+          docker image inspect "$IMAGE" --format '{{index .RepoDigests 0}}' | tee "artifacts/$KEY/docker-digest.txt"
+          docker run --rm -v "$GITHUB_WORKSPACE:/work" -w /work "$IMAGE" bash -s 2>&1 | tee "artifacts/$KEY/build.log" <<'BUILD'
+          set -euxo pipefail
+          export DEBIAN_FRONTEND=noninteractive
+          apt-get update
+          apt-get install -y --no-install-recommends cmake ninja-build git build-essential python3 pkg-config libssl-dev
+          HIP_CLANG="$(hipconfig -l)/clang"
+          test -x "$HIP_CLANG"
+          "$HIP_CLANG" --version
+          hipconfig --full || true
+          cmake -S . -B "build-ci-gfx906" -G Ninja -DCMAKE_HIP_COMPILER="$HIP_CLANG" -DGPU_TARGETS=gfx906 -DGGML_HIP=ON -DGGML_HIP_EXPORT_METRICS=ON -DGGML_CCACHE=OFF -DCMAKE_BUILD_TYPE=Release -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF
+          cmake --build "build-ci-gfx906" --target ggml-hip --parallel 2
+          BUILD
+      - name: Archive saved ISA and build metadata
+        if: always()
+        shell: bash
+        run: |
+          set -euxo pipefail
+          mkdir -p "artifacts/$KEY"
+          df -h / > "artifacts/$KEY/disk.txt" || true
+          if [ -d build-ci-gfx906 ]; then
+            grep -E '^(GGML_HIP_EXPORT_METRICS|GGML_HIP|GPU_TARGETS|CMAKE_HIP_COMPILER|CMAKE_BUILD_TYPE|CMAKE_HIP_FLAGS):' build-ci-gfx906/CMakeCache.txt > "artifacts/$KEY/cmake-settings.txt" || true
+            (cd build-ci-gfx906 && find . -type f -name '*.s' -print0 | tar --null -T - -czf "../artifacts/$KEY/isa.tar.gz")
+            find build-ci-gfx906 -type f -name '*.s' | wc -l > "artifacts/$KEY/isa-count.txt"
+          fi
+          sudo chmod -R a+rX artifacts
+      - name: Upload ISA files and compiler diagnostics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gfx906-isa-${{ matrix.key }}
+          path: artifacts/${{ matrix.key }}/
+          if-no-files-found: error
+          retention-days: 14
+          compression-level: 0
