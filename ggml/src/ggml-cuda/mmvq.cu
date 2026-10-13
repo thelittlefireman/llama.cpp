@@ -798,18 +798,10 @@ static __global__ void mul_mat_vec_q(
                     }
                 }
             }
-            if constexpr (rows_per_cuda_block == 1) {
-                tmp[j][i] = warp_reduce_sum_lane0<warp_size>(tmp[j][i]);
-            } else {
-                tmp[j][i] = warp_reduce_sum<warp_size>(tmp[j][i]);
-            }
+            tmp[j][i] = warp_reduce_sum<warp_size, rows_per_cuda_block == 1>(tmp[j][i]);
             if constexpr (has_fusion) {
                 if (use_gate) {
-                    if constexpr (rows_per_cuda_block == 1) {
-                        tmp_gate[j][i] = warp_reduce_sum_lane0<warp_size>(tmp_gate[j][i]);
-                    } else {
-                        tmp_gate[j][i] = warp_reduce_sum<warp_size>(tmp_gate[j][i]);
-                    }
+                    tmp_gate[j][i] = warp_reduce_sum<warp_size, rows_per_cuda_block == 1>(tmp_gate[j][i]);
                 }
             }
 
@@ -955,18 +947,10 @@ static __global__ void mul_mat_vec_q_moe(
     // Warp-level reduction only - no shared memory needed
 #pragma unroll
     for (int i = 0; i < c_rows_per_block; ++i) {
-        if constexpr (c_rows_per_block == 1) {
-            tmp[i] = warp_reduce_sum_lane0<warp_size>(tmp[i]);
-        } else {
-            tmp[i] = warp_reduce_sum<warp_size>(tmp[i]);
-        }
+        tmp[i] = warp_reduce_sum<warp_size, c_rows_per_block == 1>(tmp[i]);
         if constexpr (has_fusion) {
             if (use_gate) {
-                if constexpr (c_rows_per_block == 1) {
-                    tmp_gate[i] = warp_reduce_sum_lane0<warp_size>(tmp_gate[i]);
-                } else {
-                    tmp_gate[i] = warp_reduce_sum<warp_size>(tmp_gate[i]);
-                }
+                tmp_gate[i] = warp_reduce_sum<warp_size, c_rows_per_block == 1>(tmp_gate[i]);
             }
         }
     }

@@ -391,7 +391,7 @@ static bool ggml_cuda_is_aligned(const ggml_tensor * tensor, const size_t alignm
 #ifdef GGML_USE_HIP
 template <int dpp_ctrl, typename T, int row_mask = 0xf, int bank_mask = 0xf, bool bound_ctrl = true>
 static __device__ __forceinline__ T hip_update_dpp(T x) {
-        static_assert(sizeof(T) == sizeof(int), "hip_update_dpp requires a 32-bit type");
+    static_assert(sizeof(T) == sizeof(int), "hip_update_dpp requires a 32-bit type");
     return __builtin_bit_cast(
         T,
         __builtin_amdgcn_update_dpp(0, __builtin_bit_cast(int, x), dpp_ctrl, row_mask, bank_mask, bound_ctrl)
@@ -399,7 +399,8 @@ static __device__ __forceinline__ T hip_update_dpp(T x) {
 }
 #endif // GGML_USE_HIP
 
-template<int width = WARP_SIZE, typename T>
+// lane0_only may use shuffles that preserve only the first lane of each width-sized subgroup.
+template<int width = WARP_SIZE, bool lane0_only = false, typename T>
 static __device__ __forceinline__ T ggml_cuda_shfl_xor_sync(T x, int offset) {
 // clang (v20) will not unroll loops with just the plain `offset` in switch
 #if defined(GGML_USE_HIP)
@@ -420,6 +421,11 @@ static __device__ __forceinline__ T ggml_cuda_shfl_xor_sync(T x, int offset) {
         case ~1: return hip_update_dpp<0xB1>(x);   // quad_perm:[1,0,3,2]
         case ~2: return hip_update_dpp<0x4E>(x);   // quad_perm:[2,3,0,1]
         case ~4: {
+#if defined(GCN)
+            if constexpr (lane0_only) {
+                return hip_update_dpp<0x104>(x); // row_shl:4
+            }
+#endif // defined(GCN)
             const T y = hip_update_dpp<0x141>(x); // row_half_mirror: lane ^ 7
             return hip_update_dpp<0x01B>(y);      // quad_perm:[3,2,1,0]: lane ^ 3
         }
@@ -496,67 +502,30 @@ struct ggml_cuda_unroll<1> {
     }
 };
 
-template<int width = WARP_SIZE>
+template<int width = WARP_SIZE, bool lane0_only = false>
 static __device__ __forceinline__ int warp_reduce_sum(int x) {
-#if !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && __CUDA_ARCH__ >= GGML_CUDA_CC_AMPERE
-    return __reduce_add_sync(0xffffffff, x);
-#else
-#pragma unroll
-    for (int offset = width/2; offset > 0; offset >>= 1) {
-        x += ggml_cuda_shfl_xor_sync<width>(x, offset);
-    }
-    return x;
-#endif // !defined(GGML_USE_HIP) && !defined(GGML_USE_MUSA) && __CUDA_ARCH__ >= GGML_CUDA_CC_AMPERE
-}
-
-template<int width = WARP_SIZE>
-static __device__ __forceinline__ float warp_reduce_sum(float x) {
-#pragma unroll
-    for (int offset = width/2; offset > 0; offset >>= 1) {
-        x += ggml_cuda_shfl_xor_sync<width>(x, offset);
-    }
-    return x;
-}
-
-template<int width, int offset, typename T>
-static __device__ __forceinline__ T warp_reduce_sum_lane0_impl(T x) {
-    static_assert(std::is_same_v<T, float> || std::is_same_v<T, int>, "warp_reduce_sum_lane0_impl only supports float and int");
-    if constexpr (offset == 0) {
-        return x;
-    } else {
-#if defined(GGML_USE_HIP) && defined(GCN)
-        // XOR4 needs two DPP instructions on GCN, while lane 0 only needs row_shl:4
-        if constexpr (offset == 4) {
-            x += hip_update_dpp<0x104>(x); // row_shl:4
-        } else {
-            x += ggml_cuda_shfl_xor_sync<width>(x, offset);
-        }
-#else
-        x += ggml_cuda_shfl_xor_sync<width>(x, offset);
-#endif
-        return warp_reduce_sum_lane0_impl<width, offset / 2>(x);
-    }
-}
-
-// Unlike warp_reduce_sum(), only the first lane of each width-sized subgroup
-// is guaranteed to contain the complete sum.
-template<int width = WARP_SIZE>
-static __device__ __forceinline__ float warp_reduce_sum_lane0(float x) {
-    static_assert(width > 0 && width <= 64 &&  (width & (width - 1)) == 0, "width must be a power of two <= 64");
-    return warp_reduce_sum_lane0_impl<width, width / 2>(x);
-}
-
-template<int width = WARP_SIZE>
-static __device__ __forceinline__ int warp_reduce_sum_lane0(int x) {
-    static_assert(width > 0 && width <= 64 &&  (width & (width - 1)) == 0, "width must be a power of two <= 64");
+    static_assert(!lane0_only || (width > 0 && width <= 64 && (width & (width - 1)) == 0), "width must be a power of two <= 64");
 #if !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_AMPERE
-        if constexpr (width == WARP_SIZE) {
-            return __reduce_add_sync(0xffffffff, x);
-        }
+    if constexpr (!lane0_only || width == WARP_SIZE) {
+        return __reduce_add_sync(0xffffffff, x);
+    }
 #endif // !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_AMPERE
-    return warp_reduce_sum_lane0_impl<width, width / 2>(x);
+#pragma unroll
+    for (int offset = width/2; offset > 0; offset >>= 1) {
+        x += ggml_cuda_shfl_xor_sync<width, lane0_only>(x, offset);
+    }
+    return x;
 }
 
+template<int width = WARP_SIZE, bool lane0_only = false>
+static __device__ __forceinline__ float warp_reduce_sum(float x) {
+    static_assert(!lane0_only || (width > 0 && width <= 64 && (width & (width - 1)) == 0), "width must be a power of two <= 64");
+#pragma unroll
+    for (int offset = width/2; offset > 0; offset >>= 1) {
+        x += ggml_cuda_shfl_xor_sync<width, lane0_only>(x, offset);
+    }
+    return x;
+}
 
 template<int width = WARP_SIZE>
 static __device__ __forceinline__ float2 warp_reduce_sum(float2 a) {
@@ -750,7 +719,7 @@ static __device__ T block_reduce(T val, [[maybe_unused]] T * shared_vals) {
 // Reduce a block sum to thread 0. Values returned to all other threads are unspecified.
 template <const unsigned int block_size_template = 0, typename T>
 static __device__ T block_reduce_sum_lane0(T val, [[maybe_unused]] T * shared_vals) {
-    val                           = warp_reduce_sum_lane0(val);
+    val                           = warp_reduce_sum<WARP_SIZE, true>(val);
     const unsigned int block_size = block_size_template == 0 ? blockDim.x : block_size_template;
     if (block_size > WARP_SIZE) {
         assert((block_size <= 1024) && (block_size % WARP_SIZE) == 0);
@@ -762,7 +731,7 @@ static __device__ T block_reduce_sum_lane0(T val, [[maybe_unused]] T * shared_va
         __syncthreads();
         if (warp_id == 0) {
             val = lane_id < (static_cast<int>(block_size) / WARP_SIZE) ? shared_vals[lane_id] : block_reduce_policy<block_reduce_method::SUM, T>::sentinel();
-            val = warp_reduce_sum_lane0(val);
+            val = warp_reduce_sum<WARP_SIZE, true>(val);
         }
     }
     return val;
