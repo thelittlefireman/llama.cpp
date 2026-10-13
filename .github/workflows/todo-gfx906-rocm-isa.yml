@@ -47,7 +47,7 @@ jobs:
           printf '%s\n' "$IMAGE" > "artifacts/$KEY/docker-image.txt"
           docker pull "$IMAGE"
           docker image inspect "$IMAGE" --format '{{index .RepoDigests 0}}' | tee "artifacts/$KEY/docker-digest.txt"
-          docker run --rm -v "$GITHUB_WORKSPACE:/work" -w /work "$IMAGE" bash -s 2>&1 | tee "artifacts/$KEY/build.log" <<'BUILD'
+          docker run -i --rm -v "$GITHUB_WORKSPACE:/work" -w /work "$IMAGE" bash -s <<'BUILD' 2>&1 | tee "artifacts/$KEY/build.log"
           set -euxo pipefail
           export DEBIAN_FRONTEND=noninteractive
           apt-get update
