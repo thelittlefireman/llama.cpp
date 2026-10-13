@@ -50,7 +50,7 @@ jobs:
         run: |
           set -euo pipefail
           apt-get update
-          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential git cmake ninja-build rocblas-dev hipblas-dev libssl-dev python3
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential git cmake ninja-build libssl-dev python3
 
       - name: Configure gfx906 with HIP metrics
         shell: bash
