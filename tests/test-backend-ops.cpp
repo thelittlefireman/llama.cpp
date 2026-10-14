@@ -10697,6 +10697,13 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         test_cases.emplace_back(new test_mul_mat(type_a,    GGML_TYPE_F32, 16,  8, 16*256, { 1,  1}, {1, 1}));
     }
 
+    // MMVQ row-tail coverage: an odd weight-row count with one or two rows per block.
+    for (ggml_type type_a : {GGML_TYPE_Q2_K, GGML_TYPE_Q3_K, GGML_TYPE_Q6_K}) {
+        test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32, 4097, 1,   256, {1, 1}, {1, 1})); // small K, two rows per block on GCN
+        test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32, 4097, 1, 14336, {1, 1}, {1, 1})); // large K, one row per block on GCN
+        test_cases.emplace_back(new test_mul_mat(type_a, GGML_TYPE_F32, 4097, 2, 14336, {1, 1}, {1, 1})); // large K, two rows per block on GCN
+    }
+
     // Multi-column MMVQ coverage for the Q4_K weight-reuse path and a Q5_K control.
     for (ggml_type type_a : { GGML_TYPE_Q4_K, GGML_TYPE_Q5_K }) {
         for (int n = 1; n <= 8; ++n) {
