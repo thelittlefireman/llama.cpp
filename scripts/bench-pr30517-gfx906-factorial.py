@@ -107,20 +107,21 @@ def markdown(cases, versions, samples, threshold, errors):
             for name,v in med.items():
                 if v is None: comparisons[name]["missing"]+=1
             continue
-        original=med["original"]
-        gains={name:100*(original/med[name]-1) for name in ("vsub4","nwarps1","both")}
+        times={name:val for name,val in med.items() if val is not None}
+        original=times["original"]
+        gains={name:100*(original/times[name]-1) for name in ("vsub4","nwarps1","both")}
         for name,gain in gains.items():
             if gain>0: comparisons[name]["wins"]+=1
             if gain < -threshold:
                 comparisons[name]["regressions"]+=1
                 fail.append(f"{case}: {name} {gain:.2f}% vs original")
-        best=min(("original","vsub4","nwarps1","both"), key=lambda x:med[x])
-        if med["both"] > min(med["vsub4"], med["nwarps1"])*(1+threshold/100):
+        best=min(("original","vsub4","nwarps1","both"), key=lambda x:times[x])
+        if times["both"] > min(times["vsub4"], times["nwarps1"])*(1+threshold/100):
             fail.append(f"{case}: both is >{threshold}% slower than best single optimization")
-        if "master" in med and med["both"]>med["master"]*(1+threshold/100):
+        if "master" in med and times["both"]>times["master"]*(1+threshold/100):
             fail.append(f"{case}: both slower than master by >{threshold}%")
         parts=[t,str(m),str(n),str(k)]
-        parts += [f"{med[name]:.2f}" for name in versions]
+        parts += [f"{times[name]:.2f}" for name in versions]
         parts += [f"{gains[name]:+.2f}%" for name in ("vsub4","nwarps1","both")]
         parts += [best]
         lines.append("| " + " | ".join(parts) + " |")
