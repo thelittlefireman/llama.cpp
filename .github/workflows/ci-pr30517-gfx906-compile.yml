@@ -1,0 +1,45 @@
+name: PR30517 gfx906 HIP compile
+
+on:
+  push:
+    branches:
+      - test_PR_30517_VSUB4
+      - test_PR_30517_VSUB4_NWARPS1
+    paths:
+      - '.github/workflows/ci-pr30517-gfx906-compile.yml'
+      - 'ggml/src/ggml-cuda/vecdotq.cuh'
+      - 'ggml/src/ggml-cuda/mmvq.cu'
+      - 'scripts/bench-pr30517-gfx906-factorial.py'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  gfx906-compile:
+    runs-on: ubuntu-22.04
+    container: rocm/dev-ubuntu-22.04:7.2.1
+    timeout-minutes: 75
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential cmake ninja-build python3 libssl-dev rocblas-dev hipblas-dev
+
+      - name: Validate benchmark script syntax
+        run: |
+          if test -f scripts/bench-pr30517-gfx906-factorial.py; then
+            python3 -m py_compile scripts/bench-pr30517-gfx906-factorial.py
+            python3 scripts/bench-pr30517-gfx906-factorial.py --help
+          fi
+
+      - name: Compile test-backend-ops for gfx906
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_HIP_COMPILER="$(hipconfig -l)/clang" \
+            -DGGML_HIP=ON -DGPU_TARGETS=gfx906 \
+            -DGGML_HIP_NO_VMM=ON -DLLAMA_BUILD_TESTS=ON \
+            -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target test-backend-ops -j 2
