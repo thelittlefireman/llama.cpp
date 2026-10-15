@@ -308,19 +308,11 @@ static __global__ void mul_mat_vec_f(
     ggml_cuda_pdl_lc();
 #pragma unroll
     for (int j = 0; j < ncols_dst; ++j) {
-        if constexpr (ncols_dst == 1) {
-            sumf[j] = warp_reduce_sum_lane0<warp_size>(sumf[j]);
-        } else {
-            sumf[j] = warp_reduce_sum<warp_size>(sumf[j]);
-        }
+        sumf[j] = warp_reduce_sum<warp_size, ncols_dst == 1>(sumf[j]);
 
         if constexpr (has_fusion) {
             if (use_gate) {
-                if constexpr (ncols_dst == 1) {
-                    sumf_gate[j] = warp_reduce_sum_lane0<warp_size>(sumf_gate[j]);
-                } else {
-                    sumf_gate[j] = warp_reduce_sum<warp_size>(sumf_gate[j]);
-                }
+                sumf_gate[j] = warp_reduce_sum<warp_size, ncols_dst == 1>(sumf_gate[j]);
             }
         }
         if (block_size > warp_size) {
@@ -335,19 +327,11 @@ static __global__ void mul_mat_vec_f(
             __syncthreads();
             if (tid < warp_size) {
                 sumf[j] = buf_iw[tid];
-                if constexpr (ncols_dst == 1) {
-                    sumf[j] = warp_reduce_sum_lane0<warp_size>(sumf[j]);
-                } else {
-                    sumf[j] = warp_reduce_sum<warp_size>(sumf[j]);
-                }
+                sumf[j] = warp_reduce_sum<warp_size, ncols_dst == 1>(sumf[j]);
                 if constexpr (has_fusion) {
                     if (use_gate) {
                         sumf_gate[j] = buf_iw_gate[tid];
-                        if constexpr (ncols_dst == 1) {
-                            sumf_gate[j] = warp_reduce_sum_lane0<warp_size>(sumf_gate[j]);
-                        } else {
-                            sumf_gate[j] = warp_reduce_sum<warp_size>(sumf_gate[j]);
-                        }
+                        sumf_gate[j] = warp_reduce_sum<warp_size, ncols_dst == 1>(sumf_gate[j]);
                     }
                 }
             }
