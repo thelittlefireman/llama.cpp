@@ -504,9 +504,9 @@ static __global__ void quantize_mmq_q8_1(
     if (ds_layout != MMQ_Q8_1_DS_LAYOUT_D4) {
         sum = xi.x + xi.y + xi.z + xi.w;
 
-    // Calculate sums across vals_per_sum/4 threads.
-    sum = warp_reduce_sum<vals_per_sum/4, true>(sum);
-
+        // Calculate sums across vals_per_sum/4 threads.
+        sum = warp_reduce_sum<vals_per_sum/4, true>(sum);
+    }
     const float d_inv = 127.0f / amax;
     char4 q;
     q.x = roundf(xi.x*d_inv);
