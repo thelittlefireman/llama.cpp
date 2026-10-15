@@ -86,7 +86,7 @@ static __global__ void quantize_q8_1(
     float sum = xi;
 
     amax = warp_reduce_max<QK8_1>(amax);
-    sum = warp_reduce_sum_lane0<QK8_1>(sum);
+    sum = warp_reduce_sum<QK8_1, true>(sum);
 
     const float  d = amax / 127.0f;
     const int8_t q = amax == 0.0f ? 0 : roundf(xi / d);
@@ -505,7 +505,7 @@ static __global__ void quantize_mmq_q8_1(
         sum = xi.x + xi.y + xi.z + xi.w;
 
     // Calculate sums across vals_per_sum/4 threads.
-    sum = warp_reduce_sum_lane0<vals_per_sum/4>(sum);
+    sum = warp_reduce_sum<vals_per_sum/4, true>(sum);
 
     const float d_inv = 127.0f / amax;
     char4 q;
