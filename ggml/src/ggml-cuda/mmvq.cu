@@ -97,6 +97,7 @@ enum mmvq_parameter_table_id {
     MMVQ_PARAMETERS_GENERIC = 0,
     MMVQ_PARAMETERS_TURING,
     MMVQ_PARAMETERS_GCN,
+    MMVQ_PARAMETERS_GFX906,
     MMVQ_PARAMETERS_RDNA2,
     MMVQ_PARAMETERS_RDNA3_0,
     MMVQ_PARAMETERS_RDNA4,
@@ -110,6 +111,8 @@ static constexpr __device__ mmvq_parameter_table_id get_device_table_id() {
     return MMVQ_PARAMETERS_RDNA3_0;
 #elif defined(RDNA2) || defined(RDNA3_5)
     return MMVQ_PARAMETERS_RDNA2;
+#elif defined(__gfx906__)
+    return MMVQ_PARAMETERS_GFX906;
 #elif defined(GCN) || defined(CDNA)
     return MMVQ_PARAMETERS_GCN;
 #elif __CUDA_ARCH__ >= GGML_CUDA_CC_VOLTA && __CUDA_ARCH__ < GGML_CUDA_CC_AMPERE
@@ -130,6 +133,9 @@ static __host__ mmvq_parameter_table_id get_device_table_id(int cc) {
     }
     if (GGML_CUDA_CC_IS_RDNA2(cc) || GGML_CUDA_CC_IS_RDNA3_5(cc)) {
         return MMVQ_PARAMETERS_RDNA2;
+    }
+    if (cc == GGML_CUDA_CC_VEGA20) {
+        return MMVQ_PARAMETERS_GFX906;
     }
     if (GGML_CUDA_CC_IS_GCN(cc) || GGML_CUDA_CC_IS_CDNA(cc)) {
         return MMVQ_PARAMETERS_GCN;
@@ -465,7 +471,12 @@ static constexpr __host__ __device__ int calc_nwarps(ggml_type type, int ncols_d
             default:
                 return 1;
         }
-    } else if (table_id == MMVQ_PARAMETERS_GCN) {
+    } else if (table_id == MMVQ_PARAMETERS_GCN || table_id == MMVQ_PARAMETERS_GFX906) {
+        if (table_id == MMVQ_PARAMETERS_GFX906 &&
+            ((type == GGML_TYPE_Q3_K && (ncols_dst == 2 || ncols_dst == 3)) ||
+             (type == GGML_TYPE_Q6_K && ncols_dst == 4))) {
+            return 1;
+        }
         switch (ncols_dst) {
             case 1:
             case 2:
@@ -591,7 +602,7 @@ static constexpr __host__ __device__ bool mmvq_two_rows_ncols1(ggml_type type) {
 }
 
 static constexpr __host__ __device__ int calc_rows_per_block(ggml_type type, int ncols_dst, int table_id, bool small_k = false, int nwarps = 1) {
-    if (table_id == MMVQ_PARAMETERS_GENERIC || table_id == MMVQ_PARAMETERS_GCN || table_id == MMVQ_PARAMETERS_TURING || table_id == MMVQ_PARAMETERS_GB10) {
+    if (table_id == MMVQ_PARAMETERS_GENERIC || table_id == MMVQ_PARAMETERS_GCN || table_id == MMVQ_PARAMETERS_GFX906 || table_id == MMVQ_PARAMETERS_TURING || table_id == MMVQ_PARAMETERS_GB10) {
         switch (ncols_dst) {
             case 1:
                 if (small_k) {
