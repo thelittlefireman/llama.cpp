@@ -469,8 +469,9 @@ static __device__ __forceinline__ float vec_dot_q3_K_q8_1_impl_mmvq(
             const int vil = (vl[j] >> (2*i)) & 0x03030303;
             const int vih = ((vh[j] >> i) << 2) & 0x04040404;
 
-            const int vi = __vsub4(vil | vih, 0x04040404);
-            sumi = ggml_cuda_dp4a(vi, u[VDR_Q3_K_Q8_1_MMVQ*i + j], sumi); // SIMD dot product
+            // (vil | vih) - 4 for each byte, the - 4 is done by the second dp4a
+            sumi = ggml_cuda_dp4a(vil | vih,  u[VDR_Q3_K_Q8_1_MMVQ*i + j], sumi); // SIMD dot product
+            sumi = ggml_cuda_dp4a(0xFCFCFCFC, u[VDR_Q3_K_Q8_1_MMVQ*i + j], sumi);
         }
 
         sumf += d8[i] * (sumi * sc);
@@ -640,8 +641,9 @@ static __device__ __forceinline__ float vec_dot_q6_K_q8_1_impl_mmvq(
             const int vil = (vl[j] >> (4*i)) & 0x0F0F0F0F;
             const int vih = ((vh[j] >> (4*i)) << 4) & 0x30303030;
 
-            const int vi = __vsub4(vil | vih, 0x20202020);
-            sumi = ggml_cuda_dp4a(vi, u[VDR_Q6_K_Q8_1_MMVQ*i + j], sumi); // SIMD dot product
+            // (vil | vih) - 32 for each byte, the - 32 is done by the second dp4a
+            sumi = ggml_cuda_dp4a(vil | vih,  u[VDR_Q6_K_Q8_1_MMVQ*i + j], sumi); // SIMD dot product
+            sumi = ggml_cuda_dp4a(0xE0E0E0E0, u[VDR_Q6_K_Q8_1_MMVQ*i + j], sumi);
         }
 
         sumf += d8[i] * (sumi * sc);
