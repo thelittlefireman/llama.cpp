@@ -12534,6 +12534,21 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_perf() {
         }
     }
 
+    // RWKV7: single-token warp-row path and multi-token controls.
+    for (int64_t n_seq_tokens : {1, 32, 128}) {
+        for (int64_t n_seqs : {1, 4}) {
+            test_cases.emplace_back(new test_rwkv_wkv7(GGML_TYPE_F32, 32, 64, n_seq_tokens, n_seqs));
+        }
+    }
+
+    // FWHT: single-token and batched Hadamard transforms.
+    for (ggml_type type_b : {GGML_TYPE_F32, GGML_TYPE_F16}) {
+        for (int64_t n : {64, 128, 256, 512}) {
+            test_cases.emplace_back(new test_mul_mat_hadamard(GGML_TYPE_F32, type_b, n, 1, n));
+        }
+        test_cases.emplace_back(new test_mul_mat_hadamard(GGML_TYPE_F32, type_b, 128, 32, 128));
+    }
+
     // launch-overhead isolation: single L2_NORM launch vs batched siblings at the GDN
     // production shape (strided qkv views) -- perf-mode only, the eval list has its own
     // 2/4-wide coverage
