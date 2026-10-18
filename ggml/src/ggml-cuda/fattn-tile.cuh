@@ -643,7 +643,7 @@ static __device__ __forceinline__ void flash_attn_tile_iter(
             }
         }
 
-        KQ_max_new[jc0] = warp_reduce_max<warp_size>(KQ_max_new[jc0]);
+        KQ_max_new[jc0] = ggml_cuda_fattn_reduce_max(KQ_max_new[jc0]);
     }
 
     if constexpr (np == 1) {
@@ -656,6 +656,7 @@ static __device__ __forceinline__ void flash_attn_tile_iter(
         }
         __syncthreads();
         KQ_max_new[0] = KQ_max_new_shared[(threadIdx.y & ~(np-1)) + threadIdx.x % np];
+        // TODO should use KQ_max_new[0] = ggml_cuda_fattn_reduce_max(KQ_max_new[0]); but np is not always a full 32 lanes reduction.
         KQ_max_new[0] = warp_reduce_max<np>(KQ_max_new[0]);
     }
 
