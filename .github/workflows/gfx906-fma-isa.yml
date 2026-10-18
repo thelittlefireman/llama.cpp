@@ -1,4 +1,4 @@
-name: gfx906 FlashAttention interleave ISA
+name: gfx906 FlashAttention interleave2 ISA
 
 on:
   push:
@@ -13,11 +13,11 @@ jobs:
     timeout-minutes: 80
     container: rocm/dev-ubuntu-22.04:7.2.1
     steps:
-      - name: Checkout FlashAttention interleave test
+      - name: Checkout FlashAttention pair interleave
         uses: actions/checkout@v4
         with:
           repository: thelittlefireman/llama.cpp
-          ref: 83c326f1e4f80b71fabacfe8847f44f2366d348b
+          ref: f84095e6be36c1699b74c039f5429d21a7962544
           persist-credentials: false
 
       - name: Dependencies
@@ -33,7 +33,7 @@ jobs:
             -DGPU_TARGETS=gfx906 -DGGML_HIP=ON -DCMAKE_BUILD_TYPE=Release \
             -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF \
             -DCMAKE_HIP_FLAGS='-save-temps -Rpass-analysis=kernel-resource-usage'
-          cmake --build build --target ggml-hip -j 2 2>&1 | tee interleave-build.log
+          cmake --build build --target ggml-hip -j 2 2>&1 | tee interleave2-build.log
 
       - name: Pack all gfx906 saved ISA
         run: |
@@ -44,20 +44,20 @@ jobs:
           assert len(paths) == 146, f'Expected 146 gfx906 ISA files, found {len(paths)}'
           for p in paths:
               assert p.is_file()
-          with tarfile.open('interleave-gfx906-isa.tar.gz', 'w:gz', compresslevel=5) as archive:
+          with tarfile.open('interleave2-gfx906-isa.tar.gz', 'w:gz', compresslevel=5) as archive:
               for p in paths:
-                  archive.add(p, arcname='interleave/' + p.name)
+                  archive.add(p, arcname='interleave2/' + p.name)
           print('ISA files:', len(paths))
-          print('Archive size:', Path('interleave-gfx906-isa.tar.gz').stat().st_size)
+          print('Archive size:', Path('interleave2-gfx906-isa.tar.gz').stat().st_size)
           PY
 
       - name: Upload saved ISA and diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: gfx906-fattn-dot2-interleave
+          name: gfx906-fattn-dot2-interleave2
           path: |
-            interleave-gfx906-isa.tar.gz
-            interleave-build.log
+            interleave2-gfx906-isa.tar.gz
+            interleave2-build.log
           retention-days: 10
           if-no-files-found: warn
