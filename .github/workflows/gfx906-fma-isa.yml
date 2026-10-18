@@ -1,0 +1,84 @@
+name: gfx906 FMA ISA diagnostics
+
+on:
+  push:
+    branches: [diagnostic_gfx906_fma_isa_20261018]
+
+permissions:
+  contents: read
+
+jobs:
+  isa:
+    runs-on: ubuntu-22.04
+    timeout-minutes: 80
+    container: rocm/dev-ubuntu-22.04:7.2.1
+    steps:
+      - name: Checkout upstream master at a fixed revision
+        uses: actions/checkout@v4
+        with:
+          repository: ggml-org/llama.cpp
+          ref: 797de63b2fa7396dcc8caca76834c699ac84e1c3
+          persist-credentials: false
+
+      - name: Install build dependencies
+        run: |
+          apt-get update
+          apt-get install -y --no-install-recommends build-essential cmake ninja-build hipblas-dev rocblas-dev libssl-dev python3 binutils
+          hipconfig --full || true
+
+      - name: Build gfx906 HIP kernels and emit assembly
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_HIP_COMPILER="$(hipconfig -l)/clang" \
+            -DGPU_TARGETS=gfx906 -DGGML_HIP=ON -DCMAKE_BUILD_TYPE=Release \
+            -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF \
+            -DCMAKE_HIP_FLAGS='-save-temps -Rpass-analysis=kernel-resource-usage'
+          cmake --build build --target ggml-hip -j 2 2>&1 | tee build-gfx906.log
+          find . -type f -name '*gfx906*.s' | sort | tee isa-files.txt
+          test -s isa-files.txt
+
+      - name: Analyze FMA/DOT ISA and save representative assembly
+        run: |
+          python3 - <<'PY'
+          import collections, os, pathlib, re, shutil
+          files = [pathlib.Path(s.strip()) for s in open('isa-files.txt') if s.strip()]
+          families = ('mmq', 'mmvf', 'mmf', 'fattn', 'lightning-indexer', 'vecdotq', 'conv2d', 'conv3d')
+          terms = ('v_fmac_f32', 'v_fma_f32', 'v_mac_f32', 'v_dot2_f32_f16', 'v_pk_fma_f16', 'v_fma_mix_f32', 'v_fma_mixlo_f16', 'v_fma_mixhi_f16', 'v_dot4_i32_i8', 'v_fmac_f32_dpp', 'v_cvt_f32_f16', 'v_cvt_f16_f32', 'v_mov_b32')
+          overall = collections.Counter()
+          os.makedirs('isa-selected', exist_ok=True)
+          report = []
+          for p in files:
+              data = p.read_text(errors='replace')
+              count = collections.Counter(re.findall(r'^\s*(v_[a-z0-9_]+)\s', data, re.M))
+              found = {t: sum(v for k,v in count.items() if k == t or k.startswith(t + '_')) for t in terms}
+              overall.update(count)
+              report.append((p, found, len(data.splitlines())))
+          print('UPSTREAM_SHA=797de63b2fa7396dcc8caca76834c699ac84e1c3')
+          print('ASSEMBLY_FILES', len(files))
+          print('TOTAL_MATCHING_INSTRUCTIONS')
+          for t in terms:
+              print('%-22s %d' % (t, sum(v for k,v in overall.items() if k==t or k.startswith(t+'_'))))
+          print('PER_SOURCE_MATCHING_INSTRUCTIONS')
+          for p, counts, n in sorted(report, key=lambda v: (-sum(v[1].values()), v[0].name)):
+              if sum(counts.values()) and any(s in p.name.lower() for s in families):
+                  print('%-75s lines=%-7d %s' % (p.name, n, ' '.join(f'{k}:{v}' for k,v in counts.items() if v)))
+          selected=collections.Counter()
+          for p, counts, n in sorted(report, key=lambda v: (-sum(v[1].values()), v[0].name)):
+              family = next((s for s in families if s in p.name.lower()), None)
+              if family and selected[family] < 2 and n > 0:
+                  out = pathlib.Path('isa-selected')/p.name
+                  if not out.exists(): shutil.copyfile(p, out); selected[family]+=1
+          print('SELECTED_ASSEMBLY', sorted(p.name for p in pathlib.Path('isa-selected').iterdir()))
+          PY
+
+      - name: Upload ISA artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gfx906-fma-isa
+          path: |
+            isa-files.txt
+            isa-selected/
+            build-gfx906.log
+          retention-days: 10
+          if-no-files-found: warn
