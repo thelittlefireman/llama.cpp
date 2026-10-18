@@ -84,7 +84,7 @@ static inline ggml_cuda_flash_attn_ext_f16_extra_data ggml_cuda_flash_attn_ext_g
     return data;
 }
 
-// ROCm fail to merge multiple v_max_f32_dpp in one v_max_f32_dpp automatically ==> force it with asm (test with ROCm 7.2.4)
+// ROCm fails to merge multiple v_max_f32_dpp in one v_max_f32_dpp automatically ==> force it with asm (test with ROCm 7.2.4)
 static __device__ __forceinline__ float ggml_cuda_fattn_reduce_max(float x) {
 #if defined(GGML_USE_HIP) && defined(GCN)
     x = fmaxf(x, ggml_cuda_shfl_xor_sync<32>(x, 16));
@@ -99,6 +99,53 @@ static __device__ __forceinline__ float ggml_cuda_fattn_reduce_max(float x) {
 #else
     return warp_reduce_max<32>(x);
 #endif // defined(GGML_USE_HIP) && defined(GCN)
+}
+
+// ROCm fails to merge multiple v_max_f32_dpp in one v_max_f32_dpp automatically ==> force it with asm (test with ROCm 7.2.4)
+template<int nthreads_KQ>
+static __device__ __forceinline__ float ggml_cuda_fattn_vec_reduce_max(float x) {
+#if defined(GGML_USE_HIP) && defined(GCN)
+    static_assert(nthreads_KQ == 4 || nthreads_KQ == 8, "unsupported nthreads_KQ");
+
+    if constexpr (nthreads_KQ == 4) {
+        asm volatile(
+            "v_nop\n\tv_nop\n\tv_max_f32_dpp %0, %0, %0 row_ror:4"
+            : "+v"(x));
+    }
+
+    asm volatile(
+        "v_nop\n\tv_nop\n\tv_max_f32_dpp %0, %0, %0 row_ror:8"
+        : "+v"(x));
+
+    return fmaxf(x, ggml_cuda_shfl_xor_sync<32>(x, 16));
+#else
+#pragma unroll
+    for (int offset = nthreads_KQ; offset < WARP_SIZE; offset <<= 1) {
+        x = fmaxf(x, ggml_cuda_shfl_xor_sync(x, offset));
+    }
+    return x;
+#endif // defined(GGML_USE_HIP) && defined(GCN)
+}
+
+// ROCm fails to merge multiple v_max_f32_dpp in one v_max_f32_dpp automatically ==> force it with asm (test with ROCm 7.2.4)
+template<int width>
+static __device__ __forceinline__ float ggml_cuda_fattn_reduce_max(float x) {
+#if defined(GGML_USE_HIP) && defined(GCN)
+    if constexpr (width == 2 || width == 4) {
+        if constexpr (width == 4) {
+            asm volatile(
+                "v_nop\n\tv_nop\n\tv_max_f32_dpp %0, %0, %0 quad_perm:[2,3,0,1]"
+                : "+v"(x));
+        }
+
+        asm volatile(
+            "v_nop\n\tv_nop\n\tv_max_f32_dpp %0, %0, %0 quad_perm:[1,0,3,2]"
+            : "+v"(x));
+
+        return x;
+    }
+#endif // defined(GGML_USE_HIP) && defined(GCN)
+    return warp_reduce_max<width>(x);
 }
 
 template <int D, int nthreads>
