@@ -293,6 +293,7 @@ static __global__ void flash_attn_ext_vec(
         for (int j = 0; j < ncols; ++j) {
 #pragma unroll
             for (int offset = nthreads_KQ; offset < WARP_SIZE; offset <<= 1) {
+                // TODO should use ggml_cuda_fattn_reduce_max(KQ_max_new[0]); but nthreads_KQ is not always a full 32 lanes reduction.
                 KQ_max_new[j] = fmaxf(KQ_max_new[j], ggml_cuda_shfl_xor_sync(KQ_max_new[j], offset));
             }
             const float KQ_max_scale = expf(KQ_max[j] - KQ_max_new[j]);
@@ -436,7 +437,7 @@ static __global__ void flash_attn_ext_vec(
         }
 
         float kqmax_new = KQ_max_shared[j_VKQ][threadIdx.x];
-        kqmax_new = warp_reduce_max(kqmax_new);
+        kqmax_new = ggml_cuda_fattn_reduce_max(kqmax_new);
         const float kqmax_scale = expf(KQ_max[j_VKQ] - kqmax_new);
         KQ_max[j_VKQ] = kqmax_new;
 
