@@ -1,4 +1,4 @@
-name: gfx906 FMA ISA A/B
+name: gfx906 FlashAttention interleave ISA
 
 on:
   push:
@@ -8,81 +8,56 @@ permissions:
   contents: read
 
 jobs:
-  compare:
+  isa:
     runs-on: ubuntu-22.04
-    timeout-minutes: 90
+    timeout-minutes: 80
     container: rocm/dev-ubuntu-22.04:7.2.1
     steps:
-      - name: Checkout upstream master baseline
-        uses: actions/checkout@v4
-        with:
-          repository: ggml-org/llama.cpp
-          ref: 797de63b2fa7396dcc8caca76834c699ac84e1c3
-          path: baseline-src
-          persist-credentials: false
-
-      - name: Checkout builtin feature branch
+      - name: Checkout FlashAttention interleave test
         uses: actions/checkout@v4
         with:
           repository: thelittlefireman/llama.cpp
-          ref: 0b381f08d49ab308206923c6a93576f7e572aec1
-          path: builtin-src
+          ref: 83c326f1e4f80b71fabacfe8847f44f2366d348b
           persist-credentials: false
 
-      - name: Install build dependencies
+      - name: Dependencies
         run: |
           apt-get update
           apt-get install -y --no-install-recommends build-essential cmake ninja-build hipblas-dev rocblas-dev libssl-dev python3 binutils
-          hipconfig --full || true
-          diff -u baseline-src/ggml/src/ggml-cuda/common.cuh builtin-src/ggml/src/ggml-cuda/common.cuh || test "$?" -eq 1
+          hipconfig --version
 
-      - name: Build builtin for gfx906
+      - name: Build gfx906 saved assembly
         run: |
-          cmake -S builtin-src -B builtin-src/build -G Ninja \
-            -DCMAKE_HIP_COMPILER="$(hipconfig -l)/clang" -DGPU_TARGETS=gfx906 \
-            -DGGML_HIP=ON -DCMAKE_BUILD_TYPE=Release \
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_HIP_COMPILER="$(hipconfig -l)/clang" \
+            -DGPU_TARGETS=gfx906 -DGGML_HIP=ON -DCMAKE_BUILD_TYPE=Release \
             -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF \
             -DCMAKE_HIP_FLAGS='-save-temps -Rpass-analysis=kernel-resource-usage'
-          cmake --build builtin-src/build --target ggml-hip -j 2 2>&1 | tee builtin-build.log
+          cmake --build build --target ggml-hip -j 2 2>&1 | tee interleave-build.log
 
-      - name: Build master for gfx906
-        run: |
-          cmake -S baseline-src -B baseline-src/build -G Ninja \
-            -DCMAKE_HIP_COMPILER="$(hipconfig -l)/clang" -DGPU_TARGETS=gfx906 \
-            -DGGML_HIP=ON -DCMAKE_BUILD_TYPE=Release \
-            -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF -DLLAMA_BUILD_SERVER=OFF \
-            -DCMAKE_HIP_FLAGS='-save-temps -Rpass-analysis=kernel-resource-usage'
-          cmake --build baseline-src/build --target ggml-hip -j 2 2>&1 | tee baseline-build.log
-
-      - name: Pack saved ISA and metadata for v27
+      - name: Pack all gfx906 saved ISA
         run: |
           python3 - <<'PY'
           from pathlib import Path
-          import shutil, tarfile
-          for label in ('baseline', 'builtin'):
-              root = Path(label + '-src/build')
-              paths = sorted(root.rglob('*gfx906*.s'))
-              assert len(paths) >= 100, f'{label}: missing saved ISA files: {len(paths)}'
-              target = Path('comparison-isa') / label
-              target.mkdir(parents=True, exist_ok=True)
+          import tarfile
+          paths = sorted(Path('build').rglob('*gfx906*.s'))
+          assert len(paths) == 146, f'Expected 146 gfx906 ISA files, found {len(paths)}'
+          for p in paths:
+              assert p.is_file()
+          with tarfile.open('interleave-gfx906-isa.tar.gz', 'w:gz', compresslevel=5) as archive:
               for p in paths:
-                  out = target / p.name
-                  if out.exists(): raise RuntimeError(f'Duplicate assembly filename: {p.name}')
-                  shutil.copy2(p, out)
-              print(label, len(paths), 'ISA files')
-          with tarfile.open('gfx906-isa-ab.tar.gz', 'w:gz', compresslevel=5) as tar:
-              tar.add('comparison-isa')
-          print('archive size', Path('gfx906-isa-ab.tar.gz').stat().st_size)
+                  archive.add(p, arcname='interleave/' + p.name)
+          print('ISA files:', len(paths))
+          print('Archive size:', Path('interleave-gfx906-isa.tar.gz').stat().st_size)
           PY
 
-      - name: Upload comparison artifacts
+      - name: Upload saved ISA and diagnostics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: gfx906-fdot2-isa-ab
+          name: gfx906-fattn-dot2-interleave
           path: |
-            gfx906-isa-ab.tar.gz
-            baseline-build.log
-            builtin-build.log
+            interleave-gfx906-isa.tar.gz
+            interleave-build.log
           retention-days: 10
           if-no-files-found: warn
