@@ -540,9 +540,9 @@ static __device__ __forceinline__ void flash_attn_tile_iter_KQ(
 #pragma unroll
         for (int i_KQ_0 = 0; i_KQ_0 < nbatch_fa; i_KQ_0 += np*warp_size) {
 #pragma unroll
-            for (int jc0 = 0; jc0 < cpw; ++jc0) {
+            for (int k = 0; k < cpy_ne; ++k) {
 #pragma unroll
-                for (int k = 0; k < cpy_ne; ++k) {
+                for (int jc0 = 0; jc0 < cpw; ++jc0) {
                     ggml_cuda_mad(KQ_acc[i_KQ_0/(np*warp_size)*cpw + jc0], K_k[i_KQ_0/(np*warp_size)][k], Q_k[jc0][k]);
                 }
             }
