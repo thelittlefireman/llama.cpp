@@ -764,7 +764,7 @@ static __device__ __forceinline__ void ggml_cuda_mad(float & acc, const float2 v
 
 static __device__ __forceinline__ void ggml_cuda_mad(float & acc, const half2 v, const half2 u) {
 #ifdef V_DOT2_F32_F16_AVAILABLE
-    asm volatile("v_dot2_f32_f16 %0, %1, %2, %0" : "+v"(acc) : "v"(v), "v"(u));
+    acc = __builtin_amdgcn_fdot2(v.data, u.data, acc, false);
 #else
 #ifdef FAST_FP16_AVAILABLE
     const float2 tmp = __half22float2(v*u);
