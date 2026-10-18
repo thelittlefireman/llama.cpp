@@ -34,9 +34,7 @@ jobs:
           apt-get update
           apt-get install -y --no-install-recommends build-essential cmake ninja-build hipblas-dev rocblas-dev libssl-dev python3 binutils
           hipconfig --full || true
-          git -C baseline-src rev-parse HEAD
-          git -C builtin-src rev-parse HEAD
-          git -C baseline-src diff --no-index -- ggml/src/ggml-cuda/common.cuh ../builtin-src/ggml/src/ggml-cuda/common.cuh || test "$?" -eq 1
+          diff -u baseline-src/ggml/src/ggml-cuda/common.cuh builtin-src/ggml/src/ggml-cuda/common.cuh || test "$?" -eq 1
 
       - name: Build builtin for gfx906
         run: |
