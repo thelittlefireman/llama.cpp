@@ -108,16 +108,19 @@ static __device__ __forceinline__ float ggml_cuda_fattn_vec_reduce_max(float x) 
     static_assert(nthreads_KQ == 4 || nthreads_KQ == 8, "unsupported nthreads_KQ");
 
     if constexpr (nthreads_KQ == 4) {
+        float tmp;
         asm volatile(
-            "v_nop\n\tv_nop\n\tv_max_f32_dpp %0, %0, %0 row_ror:4"
-            : "+v"(x));
+            "v_nop\n\tv_nop\n\tv_max_f32_dpp %0, %1, %1 row_ror:4"
+            : "=v"(tmp) : "v"(x));
+        x = tmp;
     }
 
+    float tmp;
     asm volatile(
-        "v_nop\n\tv_nop\n\tv_max_f32_dpp %0, %0, %0 row_ror:8"
-        : "+v"(x));
+        "v_nop\n\tv_nop\n\tv_max_f32_dpp %0, %1, %1 row_ror:8"
+        : "=v"(tmp) : "v"(x));
 
-    return fmaxf(x, ggml_cuda_shfl_xor_sync<32>(x, 16));
+    return fmaxf(tmp, ggml_cuda_shfl_xor_sync<32>(tmp, 16));
 #else
 #pragma unroll
     for (int offset = nthreads_KQ; offset < WARP_SIZE; offset <<= 1) {
