@@ -291,10 +291,7 @@ static __global__ void flash_attn_ext_vec(
 
 #pragma unroll
         for (int j = 0; j < ncols; ++j) {
-#pragma unroll
-            for (int offset = nthreads_KQ; offset < WARP_SIZE; offset <<= 1) {
-                KQ_max_new[j] = ggml_cuda_fattn_vec_reduce_max<nthreads_KQ>(KQ_max_new[j]);
-            }
+            KQ_max_new[j] = ggml_cuda_fattn_vec_reduce_max<nthreads_KQ>(KQ_max_new[j]);
             const float KQ_max_scale = expf(KQ_max[j] - KQ_max_new[j]);
             KQ_max[j] = KQ_max_new[j];
 
