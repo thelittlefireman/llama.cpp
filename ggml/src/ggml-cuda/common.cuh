@@ -412,7 +412,6 @@ static __device__ __forceinline__ T ggml_cuda_shfl_xor_sync(T x, int offset) {
         case ~2: return hip_update_dpp<0x160 + 2>(x);
         case ~4: return hip_update_dpp<0x160 + 4>(x);
         case ~8: return hip_update_dpp<0x160 + 8>(x);
-        case ~16: return __builtin_amdgcn_ds_swizzle(__builtin_bit_cast(int, x), 0x401F);
         default: return __shfl_xor_sync(0xffffffff, x, offset, width);
     }
  #else // Fallback for GCN5 and GCN4
@@ -431,7 +430,6 @@ static __device__ __forceinline__ T ggml_cuda_shfl_xor_sync(T x, int offset) {
             return hip_update_dpp<0x01B>(y);      // quad_perm:[3,2,1,0]: lane ^ 3
         }
         case ~8: return hip_update_dpp<0x128>(x);  // row_ror:8
-        case ~16: return __builtin_amdgcn_ds_swizzle(__builtin_bit_cast(int, x), 0x401F);
         default: return __shfl_xor_sync(0xffffffff, x, offset, width);
     }
  #endif // defined(RDNA) || defined(CDNA)

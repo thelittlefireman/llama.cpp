@@ -94,7 +94,8 @@ static __device__ __forceinline__ float ggml_cuda_fattn_reduce_max(float x) {
         "v_nop\n\tv_nop\n\tv_max_f32_dpp %0, %0, %0 quad_perm:[1,0,3,2]"
         : "+v"(x));
 
-    return fmaxf(x, ggml_cuda_shfl_xor_sync<32>(x, 16));
+    const int tmp = __builtin_amdgcn_ds_swizzle(__builtin_bit_cast(int, x), 0x401F);
+    return fmaxf(x, __builtin_bit_cast(float, tmp));
 #else
     return warp_reduce_max<32>(x);
 #endif // defined(GGML_USE_HIP) && defined(GCN)
