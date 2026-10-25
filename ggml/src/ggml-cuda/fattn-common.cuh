@@ -118,7 +118,7 @@ static __device__ __forceinline__ float ggml_cuda_fattn_vec_reduce_max(float x) 
             : "+v"(x));
     }
 
-    return fmaxf(tmp, ggml_cuda_shfl_xor_sync<32>(x, 16));
+    return fmaxf(x, ggml_cuda_shfl_xor_sync<32>(x, 16));
 #else
 #pragma unroll
     for (int offset = nthreads_KQ; offset < WARP_SIZE; offset <<= 1) {
