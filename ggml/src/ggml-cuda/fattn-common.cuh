@@ -87,6 +87,11 @@ static inline ggml_cuda_flash_attn_ext_f16_extra_data ggml_cuda_flash_attn_ext_g
 // ROCm fails to merge multiple v_max_f32_dpp in one v_max_f32_dpp automatically ==> force it with asm (test with ROCm 7.2.4)
 static __device__ __forceinline__ float ggml_cuda_fattn_reduce_max(float x) {
 #if defined(GGML_USE_HIP) && defined(GCN)
+#pragma unroll
+    for (int offset = 16; offset > 0; offset >>= 1) {
+        x = fmaxf(x, __shfl_xor_sync(0xffffffff, x, offset, 32));
+    }
+    return x;
     asm volatile(
         "v_nop\n\tv_nop\n\tv_max_f32_dpp %0, %0, %0 row_ror:8\n\t"
         "v_nop\n\tv_nop\n\tv_max_f32_dpp %0, %0, %0 row_ror:4\n\t"
