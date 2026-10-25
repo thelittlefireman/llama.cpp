@@ -90,9 +90,18 @@ static __device__ __forceinline__ float ggml_cuda_fattn_reduce_max(float x) {
     x = fmaxf(x, ggml_cuda_shfl_xor_sync<32>(x, 16));
 
     asm volatile(
-        "v_nop\n\tv_nop\n\tv_max_f32_dpp %0, %0, %0 row_ror:8\n\t"
-        "v_nop\n\tv_nop\n\tv_max_f32_dpp %0, %0, %0 row_ror:4\n\t"
-        "v_nop\n\tv_nop\n\tv_max_f32_dpp %0, %0, %0 quad_perm:[2,3,0,1]\n\t"
+        "v_nop\n\tv_nop\n\tv_max_f32_dpp %0, %0, %0 row_ror:8"
+        : "+v"(x));
+
+    asm volatile(
+        "v_nop\n\tv_nop\n\tv_max_f32_dpp %0, %0, %0 row_ror:4"
+        : "+v"(x));
+
+    asm volatile(
+        "v_nop\n\tv_nop\n\tv_max_f32_dpp %0, %0, %0 quad_perm:[2,3,0,1]"
+        : "+v"(x));
+
+    asm volatile(
         "v_nop\n\tv_nop\n\tv_max_f32_dpp %0, %0, %0 quad_perm:[1,0,3,2]"
         : "+v"(x));
     return x;
