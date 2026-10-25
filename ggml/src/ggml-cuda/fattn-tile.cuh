@@ -753,10 +753,6 @@ static __device__ __forceinline__ void flash_attn_tile_iter(
                     VKQ[jc_VKQ_0*((DVp/2)/warp_size) + i0/warp_size] += V_k[i0/warp_size]*KQ_k[jc_VKQ_0];
                 }
             }
-#if defined(GGML_USE_HIP) && defined(GCN)
-            // Avoid spill with dpp
-            __builtin_amdgcn_sched_barrier(0x0001);
-#endif
         }
 #else
 #pragma unroll
@@ -984,7 +980,12 @@ static __global__ void flash_attn_tile(
 
 #pragma unroll
     for (int jc0 = 0; jc0 < cpw; ++jc0) {
-        KQ_sum[jc0] = warp_reduce_sum<warp_size>(KQ_sum[jc0]);
+        //KQ_sum[jc0] = warp_reduce_sum<warp_size>(KQ_sum[jc0]);
+        KQ_sum[jc0] += __shfl_xor_sync(0xffffffff, KQ_sum[jc0], 16, warp_size);
+        KQ_sum[jc0] += __shfl_xor_sync(0xffffffff, KQ_sum[jc0],  8, warp_size);
+        KQ_sum[jc0] += __shfl_xor_sync(0xffffffff, KQ_sum[jc0],  4, warp_size);
+        KQ_sum[jc0] += __shfl_xor_sync(0xffffffff, KQ_sum[jc0],  2, warp_size);
+        KQ_sum[jc0] += __shfl_xor_sync(0xffffffff, KQ_sum[jc0],  1, warp_size);
     }
 
     if constexpr (np > 1) {
