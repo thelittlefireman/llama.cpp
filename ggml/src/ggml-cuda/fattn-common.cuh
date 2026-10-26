@@ -93,9 +93,7 @@ static __device__ __forceinline__ float ggml_cuda_fattn_reduce_max(float x) {
         "v_nop\n\tv_nop\n\tv_max_f32_dpp %0, %0, %0 quad_perm:[2,3,0,1]\n\t"
         "v_nop\n\tv_nop\n\tv_max_f32_dpp %0, %0, %0 quad_perm:[1,0,3,2]"
         : "+v"(x));
-
-    const int tmp = __builtin_amdgcn_ds_swizzle(__builtin_bit_cast(int, x), 0x401F);
-    return fmaxf(x, __builtin_bit_cast(float, tmp));
+    return fmaxf(x, __builtin_bit_cast(float, __builtin_amdgcn_ds_swizzle(__builtin_bit_cast(int, x), 0x401F)));
 #else
     return warp_reduce_max<32>(x);
 #endif // defined(GGML_USE_HIP) && defined(GCN)
@@ -131,7 +129,7 @@ static __device__ __forceinline__ float ggml_cuda_fattn_vec_reduce_max(float x) 
 template<int width>
 static __device__ __forceinline__ float ggml_cuda_fattn_reduce_max(float x) {
 #if defined(GGML_USE_HIP) && defined(GCN)
-    if constexpr (width == 2 || width == 4) {
+    if constexpr (width == 2 || width == 4 || width == 8) {
         if constexpr (width == 4) {
             asm volatile(
                 "v_nop\n\tv_nop\n\tv_max_f32_dpp %0, %0, %0 quad_perm:[2,3,0,1]"
@@ -142,6 +140,11 @@ static __device__ __forceinline__ float ggml_cuda_fattn_reduce_max(float x) {
             "v_nop\n\tv_nop\n\tv_max_f32_dpp %0, %0, %0 quad_perm:[1,0,3,2]"
             : "+v"(x));
 
+        if constexpr (width == 8) {
+            asm volatile(
+                "v_nop\n\tv_nop\n\tv_max_f32_dpp %0, %0, %0 row_half_mirror"
+                : "+v"(x));
+        }
         return x;
     }
 #endif // defined(GGML_USE_HIP) && defined(GCN)
@@ -409,10 +412,14 @@ static __device__ __forceinline__ void quantize_q8_1_to_shared(
         amax = fmaxf(amax, fabsf(vals[l]));
         sum += vals[l];
     }
+#if defined(GGML_USE_HIP) && defined(GCN)
+    amax = ggml_cuda_fattn_reduce_max<QI8_1>(amax);
+#else
 #pragma unroll
     for (int mask = QI8_1/2; mask > 0; mask >>= 1) {
         amax = fmaxf(amax, ggml_cuda_shfl_xor_sync<32>(amax, mask));
     }
+#endif // defined(GGML_USE_HIP) && defined(GCN)
     sum = warp_reduce_sum<QI8_1, true>(sum);
 
     const float d = amax / 127;
