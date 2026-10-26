@@ -753,9 +753,6 @@ static __device__ __forceinline__ void flash_attn_tile_iter(
                     VKQ[jc_VKQ_0*((DVp/2)/warp_size) + i0/warp_size] += V_k[i0/warp_size]*KQ_k[jc_VKQ_0];
                 }
             }
-#if defined(GGML_USE_HIP) && defined(GCN)
-            __builtin_amdgcn_sched_barrier(0x0100);
-#endif // defined(GGML_USE_HIP) && defined(GCN)
         }
 #else
 #pragma unroll
