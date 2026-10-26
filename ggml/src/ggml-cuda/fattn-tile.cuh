@@ -783,7 +783,9 @@ static __device__ __forceinline__ void flash_attn_tile_iter(
             }
         }
 #endif // FAST_FP16_AVAILABLE
-
+#if defined(GGML_USE_HIP) && defined(GCN) && defined(FAST_FP16_AVAILABLE)
+        __builtin_amdgcn_sched_barrier(0);
+#endif // defined(GGML_USE_HIP) && defined(GCN) && defined(FAST_FP16_AVAILABLE)
         __syncthreads();
     }
 }
@@ -980,12 +982,7 @@ static __global__ void flash_attn_tile(
 
 #pragma unroll
     for (int jc0 = 0; jc0 < cpw; ++jc0) {
-        //KQ_sum[jc0] = warp_reduce_sum<warp_size>(KQ_sum[jc0]);
-        KQ_sum[jc0] += __shfl_xor_sync(0xffffffff, KQ_sum[jc0], 16, warp_size);
-        KQ_sum[jc0] += __shfl_xor_sync(0xffffffff, KQ_sum[jc0],  8, warp_size);
-        KQ_sum[jc0] += __shfl_xor_sync(0xffffffff, KQ_sum[jc0],  4, warp_size);
-        KQ_sum[jc0] += __shfl_xor_sync(0xffffffff, KQ_sum[jc0],  2, warp_size);
-        KQ_sum[jc0] += __shfl_xor_sync(0xffffffff, KQ_sum[jc0],  1, warp_size);
+        KQ_sum[jc0] = warp_reduce_sum<warp_size>(KQ_sum[jc0]);
     }
 
     if constexpr (np > 1) {
