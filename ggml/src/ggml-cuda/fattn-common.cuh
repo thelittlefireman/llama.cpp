@@ -130,7 +130,7 @@ template<int width>
 static __device__ __forceinline__ float ggml_cuda_fattn_reduce_max(float x) {
 #if defined(GGML_USE_HIP) && defined(GCN)
     if constexpr (width == 2 || width == 4 || width == 8) {
-        if constexpr (width == 4) {
+        if constexpr (width >= 4) {
             asm volatile(
                 "v_nop\n\tv_nop\n\tv_max_f32_dpp %0, %0, %0 quad_perm:[2,3,0,1]"
                 : "+v"(x));
@@ -140,7 +140,7 @@ static __device__ __forceinline__ float ggml_cuda_fattn_reduce_max(float x) {
             "v_nop\n\tv_nop\n\tv_max_f32_dpp %0, %0, %0 quad_perm:[1,0,3,2]"
             : "+v"(x));
 
-        if constexpr (width == 8) {
+        if constexpr (width >= 8) {
             asm volatile(
                 "v_nop\n\tv_nop\n\tv_max_f32_dpp %0, %0, %0 row_half_mirror"
                 : "+v"(x));
