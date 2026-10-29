@@ -400,7 +400,7 @@ static __device__ __forceinline__ T hip_update_dpp(T x) {
 #endif // GGML_USE_HIP
 
 // lane0_only may use shuffles that preserve only the first lane of each width-sized subgroup.
-template<int width = WARP_SIZE, bool lane0_only = false, typename T>
+template<int width = WARP_SIZE, bool lane0_only = false, bool row_ror4_after_ror8 = false, typename T>
 static __device__ __forceinline__ T ggml_cuda_shfl_xor_sync(T x, int offset) {
 // clang (v20) will not unroll loops with just the plain `offset` in switch
 #if defined(GGML_USE_HIP)
@@ -424,6 +424,9 @@ static __device__ __forceinline__ T ggml_cuda_shfl_xor_sync(T x, int offset) {
 #if defined(GCN)
             if constexpr (lane0_only) {
                 return hip_update_dpp<0x104>(x); // row_shl:4
+            }
+            if constexpr (row_ror4_after_ror8) {
+                return hip_update_dpp<0x124>(x); // row_ror:4
             }
 #endif // defined(GCN)
             const T y = hip_update_dpp<0x141>(x); // row_half_mirror: lane ^ 7
@@ -502,9 +505,10 @@ struct ggml_cuda_unroll<1> {
     }
 };
 
-template<int width = WARP_SIZE, bool lane0_only = false>
+template<int width = WARP_SIZE, bool lane0_only = false, bool row_ror4_after_ror8 = (width >= 16 && !lane0_only && (width & (width - 1)) == 0)>
 static __device__ __forceinline__ int warp_reduce_sum(int x) {
     static_assert(!lane0_only || (width > 0 && width <= 64 && (width & (width - 1)) == 0), "width must be a power of two <= 64");
+    static_assert(!row_ror4_after_ror8 || (width >= 16 && width <= 64 && (width & (width - 1)) == 0), "row_ror4 requires width >= 16");
 #if !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_AMPERE
     if constexpr (!lane0_only || width == WARP_SIZE) {
         return __reduce_add_sync(0xffffffff, x);
@@ -512,17 +516,18 @@ static __device__ __forceinline__ int warp_reduce_sum(int x) {
 #endif // !defined(GGML_USE_HIP) && __CUDA_ARCH__ >= GGML_CUDA_CC_AMPERE
 #pragma unroll
     for (int offset = width/2; offset > 0; offset >>= 1) {
-        x += ggml_cuda_shfl_xor_sync<width, lane0_only>(x, offset);
+        x += ggml_cuda_shfl_xor_sync<width, lane0_only, row_ror4_after_ror8>(x, offset);
     }
     return x;
 }
 
-template<int width = WARP_SIZE, bool lane0_only = false>
+template<int width = WARP_SIZE, bool lane0_only = false, bool row_ror4_after_ror8 = (width >= 16 && !lane0_only && (width & (width - 1)) == 0)>
 static __device__ __forceinline__ float warp_reduce_sum(float x) {
     static_assert(!lane0_only || (width > 0 && width <= 64 && (width & (width - 1)) == 0), "width must be a power of two <= 64");
+    static_assert(!row_ror4_after_ror8 || (width >= 16 && width <= 64 && (width & (width - 1)) == 0), "row_ror4 requires width >= 16");
 #pragma unroll
     for (int offset = width/2; offset > 0; offset >>= 1) {
-        x += ggml_cuda_shfl_xor_sync<width, lane0_only>(x, offset);
+        x += ggml_cuda_shfl_xor_sync<width, lane0_only, row_ror4_after_ror8>(x, offset);
     }
     return x;
 }
