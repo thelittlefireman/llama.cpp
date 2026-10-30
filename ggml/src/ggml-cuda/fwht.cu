@@ -5,6 +5,25 @@
 // wide FWHT blocks use one row per thread block with this many threads
 #define GGML_CUDA_FWHT_BLOCK_NT 256
 
+template<int warp_size>
+static __device__ __forceinline__ float fwht_cuda_butterfly(float val, int lane, int h) {
+#if defined(GGML_USE_HIP) && defined(GCN)
+    if (h == 4) {
+        float result;
+        asm volatile(
+            "v_nop\n\t"
+            "v_nop\n\t"
+            "v_add_f32_dpp %0, %1, %1 row_shl:4 bank_mask:0x5\n\t"
+            "v_sub_f32_dpp %0, %1, %1 row_shr:4 bank_mask:0xa"
+            : "=&v"(result) : "v"(val));
+        return result;
+    }
+#endif // defined(GGML_USE_HIP) && defined(GCN)
+
+    const float val2 = ggml_cuda_shfl_xor_sync<warp_size>(val, h);
+    return (lane & h) == 0 ? val + val2 : val2 - val;
+}
+
 template <int N, typename T>
 __launch_bounds__(4*ggml_cuda_get_physical_warp_size(), 1)
 __global__ void fwht_cuda(const T * src, float * dst, const int64_t n_rows, const float scale) {
@@ -33,10 +52,7 @@ __global__ void fwht_cuda(const T * src, float * dst, const int64_t n_rows, cons
     for (int h = 1; h < warp_size; h *= 2) {
 #pragma unroll
         for (int j = 0; j < el_w; j++) {
-            const float val  = reg[j];
-            const float val2 = ggml_cuda_shfl_xor_sync<warp_size>(val, h);
-
-            reg[j] = (lane & h) == 0 ? val + val2 : val2 - val;
+            reg[j] = fwht_cuda_butterfly<warp_size>(reg[j], lane, h);
         }
     }
 
@@ -98,9 +114,7 @@ __global__ void fwht_cuda_block(const T * src, float * dst, const int64_t n_rows
     for (int h = 1; h < warp_size; h *= 2) {
 #pragma unroll
         for (int j = 0; j < NE; j++) {
-            const float val  = reg[j];
-            const float val2 = __shfl_xor_sync(0xFFFFFFFF, val, h, warp_size);
-            reg[j] = (lane & h) == 0 ? val + val2 : val2 - val;
+            reg[j] = fwht_cuda_butterfly<warp_size>(reg[j], lane, h);
         }
     }
 

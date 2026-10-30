@@ -22,8 +22,8 @@ static __global__ void argmax_f32(const float * __restrict__ x, int32_t * __rest
 
 #pragma unroll
     for (int offset = WARP_SIZE/2; offset > 0; offset >>= 1) {
-        const float val = ggml_cuda_shfl_xor_sync<WARP_SIZE>(maxval, offset);
-        const int   col = ggml_cuda_shfl_xor_sync<WARP_SIZE>(argmax, offset);
+        const float val = ggml_cuda_shfl_xor_sync<WARP_SIZE, true>(maxval, offset);
+        const int   col = ggml_cuda_shfl_xor_sync<WARP_SIZE, true>(argmax, offset);
         if (val > maxval) {
             maxval = val;
             argmax = col;
@@ -51,8 +51,8 @@ static __global__ void argmax_f32(const float * __restrict__ x, int32_t * __rest
             }
 #pragma unroll
             for (int offset = WARP_SIZE/2; offset > 0; offset >>= 1) {
-                const float val = ggml_cuda_shfl_xor_sync<WARP_SIZE>(maxval, offset);
-                const int   col = ggml_cuda_shfl_xor_sync<WARP_SIZE>(argmax, offset);
+                const float val = ggml_cuda_shfl_xor_sync<WARP_SIZE, true>(maxval, offset);
+                const int   col = ggml_cuda_shfl_xor_sync<WARP_SIZE, true>(argmax, offset);
                 if (val > maxval) {
                     maxval = val;
                     argmax = col;

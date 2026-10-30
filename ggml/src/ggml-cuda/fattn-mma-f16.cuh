@@ -776,7 +776,7 @@ static __device__ __forceinline__ void flash_attn_ext_f16_iter(
         for (int col = 0; col < cols_per_thread; ++col) {
 #pragma unroll
             for (int offset = 16; offset >= 4; offset >>= 1) {
-                KQ_max_new[col] = fmaxf(KQ_max_new[col], ggml_cuda_shfl_xor_sync<warp_size>(KQ_max_new[col], offset));
+                KQ_max_new[col] = fmaxf(KQ_max_new[col], ggml_cuda_shfl_xor_sync<warp_size, false, true>(KQ_max_new[col], offset));
             }
         }
 
@@ -869,7 +869,7 @@ static __device__ __forceinline__ void flash_attn_ext_f16_iter(
 #endif // defined(TURING_MMA_AVAILABLE)
 #pragma unroll
             for (int offset = offset_first; offset >= offset_last; offset >>= 1) {
-                KQ_max_new[col] = fmaxf(KQ_max_new[col], ggml_cuda_shfl_xor_sync<warp_size>(KQ_max_new[col], offset));
+                KQ_max_new[col] = fmaxf(KQ_max_new[col], ggml_cuda_shfl_xor_sync<warp_size, false, false>(KQ_max_new[col], offset));
             }
         }
 

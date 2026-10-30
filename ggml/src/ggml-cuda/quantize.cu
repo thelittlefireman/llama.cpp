@@ -389,7 +389,7 @@ static __global__ void quantize_mmq_mxfp4(const float * __restrict__ x,
         float amax = fabsf(xi);
 #pragma unroll
         for (int mask = 16; mask > 0; mask >>= 1) {
-            amax = fmaxf(amax, ggml_cuda_shfl_xor_sync<WARP_SIZE>(amax, mask));
+            amax = fmaxf(amax, ggml_cuda_shfl_xor_sync<WARP_SIZE, false, true>(amax, mask));
         }
 
         const uint8_t e = compute_e8m0_scale(amax);
@@ -495,10 +495,7 @@ static __global__ void quantize_mmq_q8_1(
     amax = fmaxf(amax, fabsf(xi.w));
 
     // Exchange max. abs. value between vals_per_scale/4 threads.
-#pragma unroll
-    for (int offset = vals_per_scale/8; offset > 0; offset >>= 1) {
-        amax = fmaxf(amax, ggml_cuda_shfl_xor_sync<WARP_SIZE>(amax, offset));
-    }
+    amax = warp_reduce_max<vals_per_scale/4>(amax);
 
     float sum;
     if (ds_layout != MMQ_Q8_1_DS_LAYOUT_D4) {
