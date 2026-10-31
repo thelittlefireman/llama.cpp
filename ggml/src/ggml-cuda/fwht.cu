@@ -7,7 +7,8 @@
 
 template<int warp_size>
 static __device__ __forceinline__ float fwht_cuda_butterfly(float val, int lane, int h) {
-#if defined(GGML_USE_HIP) && defined(GCN)
+#if defined(DPP_AMD_AVAILABLE)
+    // DPP can fusion shfl xor and add/sub in tow instructions
     if (h == 4) {
         float result;
         asm volatile(
@@ -18,7 +19,7 @@ static __device__ __forceinline__ float fwht_cuda_butterfly(float val, int lane,
             : "=&v"(result) : "v"(val));
         return result;
     }
-#endif // defined(GGML_USE_HIP) && defined(GCN)
+#endif // defined(DPP_AMD_AVAILABLE)
 
     const float val2 = ggml_cuda_shfl_xor_sync<warp_size>(val, h);
     return (lane & h) == 0 ? val + val2 : val2 - val;
