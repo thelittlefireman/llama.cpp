@@ -85,7 +85,7 @@ static inline ggml_cuda_flash_attn_ext_f16_extra_data ggml_cuda_flash_attn_ext_g
 }
 
 // ROCm fails to merge multiple v_max_f32_dpp in one v_max_f32_dpp automatically ==> force it with asm (test with ROCm 7.2.4)
-# TODO MERGE FUNCTIONS
+// TODO MERGE FUNCTIONS
 static __device__ __forceinline__ float ggml_cuda_fattn_reduce_max(float x) {
 #if defined(DPP_AMD_AVAILABLE)
     asm (

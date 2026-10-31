@@ -257,7 +257,7 @@ typedef __hip_fp8_e4m3 __nv_fp8_e4m3;
 #if defined(CDNA) || defined(GCN) || defined(RDNA)
 // DPP instructions common for all arch: quad_perm, row_shl:1..15, row_shr:1..15, row_ror:1..15, row_mirror, row_half_mirror
 #define DPP_AMD_AVAILABLE
-#endif defined(CDNA) || defined(GCN) || defined(RDNA)
+#endif // defined(CDNA) || defined(GCN) || defined(RDNA)
 
 #if defined(RDNA)
 // DPP instructions, DPP8 and DPP16 common for all RDNA arch: row_share:0..15, row_xmask:0..15, dpp8:[0..7 × 8]
