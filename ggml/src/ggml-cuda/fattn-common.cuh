@@ -88,7 +88,7 @@ static inline ggml_cuda_flash_attn_ext_f16_extra_data ggml_cuda_flash_attn_ext_g
 # TODO MERGE FUNCTIONS
 static __device__ __forceinline__ float ggml_cuda_fattn_reduce_max(float x) {
 #if defined(DPP_AMD_AVAILABLE)
-    asm volatile(
+    asm (
         "v_nop\n\tv_nop\n\tv_max_f32_dpp %0, %0, %0 row_ror:8\n\t"
         "v_nop\n\tv_nop\n\tv_max_f32_dpp %0, %0, %0 row_ror:4\n\t"
         "v_nop\n\tv_nop\n\tv_max_f32_dpp %0, %0, %0 quad_perm:[2,3,0,1]\n\t"
@@ -134,17 +134,17 @@ static __device__ __forceinline__ float ggml_cuda_fattn_reduce_max(float x) {
 #if defined(DPP_AMD_AVAILABLE)
     if constexpr (width == 2 || width == 4 || width == 8) {
         if constexpr (width >= 4) {
-            asm volatile(
+            asm (
                 "v_nop\n\tv_nop\n\tv_max_f32_dpp %0, %0, %0 quad_perm:[2,3,0,1]"
                 : "+v"(x));
         }
 
-        asm volatile(
+        asm (
             "v_nop\n\tv_nop\n\tv_max_f32_dpp %0, %0, %0 quad_perm:[1,0,3,2]"
             : "+v"(x));
 
         if constexpr (width >= 8) {
-            asm volatile(
+            asm (
                 "v_nop\n\tv_nop\n\tv_max_f32_dpp %0, %0, %0 row_half_mirror"
                 : "+v"(x));
         }
