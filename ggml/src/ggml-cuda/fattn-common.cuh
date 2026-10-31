@@ -85,24 +85,26 @@ static inline ggml_cuda_flash_attn_ext_f16_extra_data ggml_cuda_flash_attn_ext_g
 }
 
 // ROCm fails to merge multiple v_max_f32_dpp in one v_max_f32_dpp automatically ==> force it with asm (test with ROCm 7.2.4)
+# TODO MERGE FUNCTIONS
 static __device__ __forceinline__ float ggml_cuda_fattn_reduce_max(float x) {
-#if defined(GGML_USE_HIP) && defined(GCN)
+#if defined(DPP_AMD_AVAILABLE)
     asm volatile(
         "v_nop\n\tv_nop\n\tv_max_f32_dpp %0, %0, %0 row_ror:8\n\t"
         "v_nop\n\tv_nop\n\tv_max_f32_dpp %0, %0, %0 row_ror:4\n\t"
         "v_nop\n\tv_nop\n\tv_max_f32_dpp %0, %0, %0 quad_perm:[2,3,0,1]\n\t"
         "v_nop\n\tv_nop\n\tv_max_f32_dpp %0, %0, %0 quad_perm:[1,0,3,2]"
         : "+v"(x));
+    // TODO change ds_swizzle to lane0 or row4 before row8 ? or keep swizzle ??
     return fmaxf(x, __builtin_bit_cast(float, __builtin_amdgcn_ds_swizzle(__builtin_bit_cast(int, x), 0x401F)));
-#else
+#else // defined(DPP_AMD_AVAILABLE)
     return warp_reduce_max<32>(x);
-#endif // defined(GGML_USE_HIP) && defined(GCN)
+#endif // defined(DPP_AMD_AVAILABLE)
 }
 
 // ROCm fails to merge multiple v_max_f32_dpp in one v_max_f32_dpp automatically ==> force it with asm (test with ROCm 7.2.4)
 template<int nthreads_KQ>
 static __device__ __forceinline__ float ggml_cuda_fattn_vec_reduce_max(float x) {
-#if defined(GGML_USE_HIP) && defined(GCN)
+#if defined(DPP_AMD_AVAILABLE)
     static_assert(nthreads_KQ == 4 || nthreads_KQ == 8, "unsupported nthreads_KQ");
 
     if constexpr (nthreads_KQ == 4) {
@@ -115,20 +117,21 @@ static __device__ __forceinline__ float ggml_cuda_fattn_vec_reduce_max(float x) 
         "v_nop\n\tv_nop\n\tv_max_f32_dpp %0, %0, %0 row_ror:8"
         : "+v"(x));
 
+    // TODO change ds_swizzle to lane0 or row4 before row8 ? or keep swizzle ??
     return fmaxf(x, __builtin_bit_cast(float, __builtin_amdgcn_ds_swizzle(__builtin_bit_cast(int, x), 0x401F)));
-#else
+#else // defined(DPP_AMD_AVAILABLE)
 #pragma unroll
     for (int offset = nthreads_KQ; offset < WARP_SIZE; offset <<= 1) {
         x = fmaxf(x, ggml_cuda_shfl_xor_sync(x, offset));
     }
     return x;
-#endif // defined(GGML_USE_HIP) && defined(GCN)
+#endif // defined(DPP_AMD_AVAILABLE)
 }
 
 // ROCm fails to merge multiple v_max_f32_dpp in one v_max_f32_dpp automatically ==> force it with asm (test with ROCm 7.2.4)
 template<int width>
 static __device__ __forceinline__ float ggml_cuda_fattn_reduce_max(float x) {
-#if defined(GGML_USE_HIP) && defined(GCN)
+#if defined(DPP_AMD_AVAILABLE)
     if constexpr (width == 2 || width == 4 || width == 8) {
         if constexpr (width >= 4) {
             asm volatile(
@@ -147,7 +150,7 @@ static __device__ __forceinline__ float ggml_cuda_fattn_reduce_max(float x) {
         }
         return x;
     }
-#endif // defined(GGML_USE_HIP) && defined(GCN)
+#endif // defined(DPP_AMD_AVAILABLE)
     return warp_reduce_max<width>(x);
 }
 

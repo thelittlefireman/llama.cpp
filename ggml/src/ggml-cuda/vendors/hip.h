@@ -254,6 +254,46 @@ typedef __hip_fp8_e4m3 __nv_fp8_e4m3;
 #define FP8_AVAILABLE
 #endif // HIP_VERSION >= 60300000
 
+#if defined(CDNA) || defined(GCN) || defined(RDNA)
+// DPP instructions common for all arch: quad_perm, row_shl:1..15, row_shr:1..15, row_ror:1..15, row_mirror, row_half_mirror
+#define DPP_AMD_AVAILABLE
+#endif defined(CDNA) || defined(GCN) || defined(RDNA)
+
+#if defined(RDNA)
+// DPP instructions, DPP8 and DPP16 common for all RDNA arch: row_share:0..15, row_xmask:0..15, dpp8:[0..7 × 8]
+#define DPP_RDNA_AVAILABLE
+#endif // defined(RDNA)
+
+#if defined(CDNA) || defined(GCN)
+// DPP instructions available on GCN AND CNDA arch: wave_shl:1, wave_shr:1, wave_rol:1, wave_ror:1, row_bcast:15, row_bcast:31
+#define DPP_GCN_AVAILABLE
+#endif // defined(CDNA) || defined(GCN)
+
+// TODO not used for now
+#if defined(CDNA)
+// DPP instructions are available on all CDNA arch: v_dot2c_XX_XX_dpp
+#define DPP_CDNA1_AVAILABLE
+#endif // defined(CDNA)
+
+// TODO not used for now
+#if defined(CDNA2) || defined(CDNA3) || defined(CDNA4)
+// DPP instruction row_newbcast, DPP32, DPP64 (i.e. v_mov_X64_dpp) specific instructions are only available on CDNA2+ arch
+#define DPP_CDNA2_AVAILABLE
+#endif // defined(CDNA2) || defined(CDNA3) || defined(CDNA4)
+
+// TODO not used for now
+#if defined(CDNA3) || defined(CDNA4)
+// DPP instruction FP8/BF8 (i.e. v_cvt_f32_fp8_dpp) specific instructions are only available on CDNA3+ arch
+#define DPP_CDNA3_AVAILABLE
+#endif // defined(CDNA3) || defined(CDNA4)
+
+// TODO not used for now
+#if defined(CDNA4)
+// DPP instructions BF16 (i.e. v_dot2c_f32_bf16_dpp) specific instructions are only available on CDNA4+ arch
+#define DPP_CDNA4_AVAILABLE
+#endif //  defined(CDNA4)
+
+
 typedef int8_t int8x4_t __attribute__((ext_vector_type(4)));
 typedef uint8_t uint8x4_t __attribute__((ext_vector_type(4)));
 static __device__ __forceinline__ int __vsubss4(const int a, const int b) {
@@ -310,4 +350,13 @@ static __device__ __forceinline__ unsigned int __vcmpne4(unsigned int a, unsigne
     const unsigned int ne_any_bit = ne_low_7bits | ne_high_1bit;
 
     return (ne_any_bit >> 7) * 0xff;
+}
+
+template <int dpp_ctrl, typename T, int row_mask = 0xf, int bank_mask = 0xf, bool bound_ctrl = true>
+static __device__ __forceinline__ T hip_update_dpp(T x) {
+    static_assert(sizeof(T) == sizeof(int), "hip_update_dpp requires a 32-bit type");
+    return __builtin_bit_cast(
+        T,
+        __builtin_amdgcn_update_dpp(0, __builtin_bit_cast(int, x), dpp_ctrl, row_mask, bank_mask, bound_ctrl)
+    );
 }

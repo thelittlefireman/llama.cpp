@@ -388,26 +388,11 @@ static bool ggml_cuda_is_aligned(const ggml_tensor * tensor, const size_t alignm
            tensor->nb[3] % alignment == 0;
 }
 
-// TODO move to hip.h
-#ifdef GGML_USE_HIP
-template <int dpp_ctrl, typename T, int row_mask = 0xf, int bank_mask = 0xf, bool bound_ctrl = true>
-static __device__ __forceinline__ T hip_update_dpp(T x) {
-    static_assert(sizeof(T) == sizeof(int), "hip_update_dpp requires a 32-bit type");
-    return __builtin_bit_cast(
-        T,
-        __builtin_amdgcn_update_dpp(0, __builtin_bit_cast(int, x), dpp_ctrl, row_mask, bank_mask, bound_ctrl)
-    );
-}
-#endif // GGML_USE_HIP
-
 // lane0_only may use shuffles that preserve only the first lane of each width-sized subgroup.
 template<int width = WARP_SIZE, bool lane0_only = false, bool row_ror4_after_ror8 = false, typename T>
 static __device__ __forceinline__ T ggml_cuda_shfl_xor_sync(T x, int offset) {
 // clang (v20) will not unroll loops with just the plain `offset` in switch
-        // TODO better user a defined DPP and DPPGFX10+
-#if defined(GGML_USE_HIP)
- #if defined(RDNA)
-    // row_xor_mask only available on GFX10+
+#if defined(DPP_RDNA_AVAILABLE)
     switch (~offset) {
         // subgroups (width) should not make a difference for a butterfly shuffle pattern
         case ~1: return hip_update_dpp<0x160 + 1>(x);  // row_xor_mask: offset
@@ -416,34 +401,32 @@ static __device__ __forceinline__ T ggml_cuda_shfl_xor_sync(T x, int offset) {
         case ~8: return hip_update_dpp<0x160 + 8>(x);
         default: return __shfl_xor_sync(0xffffffff, x, offset, width);
     }
- #else // Fallback for GCN5 and GCN4
+ #elif defined(DPP_AMD_AVAILABLE)
     // For the power-of-two butterfly reductions used here, offset < width and offset is a single bit. Therefore XOR(offset) never leaves the
     // corresponding width-aligned subgroup.
     switch (~offset) {
         case ~1: return hip_update_dpp<0xB1>(x);   // quad_perm:[1,0,3,2]
         case ~2: return hip_update_dpp<0x4E>(x);   // quad_perm:[2,3,0,1]
         case ~4: {
-#if defined(GCN)
-            // when it's possible always use one dpp instruction for case ~4 this enable dpp fusion at compilation
-            // a shfl_xor can only use a row_shl:4 if only lane 0 of each subgroup must contain the correct result at the end of the complete reduction
+            // When it's possible always use one dpp instruction for case ~4 this enable dpp fusion at compilation
+            // A shfl_xor can only use a row_shl:4 if only lane 0 of each subgroup must contain the correct result at the end of the complete reduction
             if constexpr (lane0_only) {
                 return hip_update_dpp<0x104>(x); // row_shl:4
             }
-            // a shfl_xor can only use a row_ror:4 operation only if a row_ror:8 has been use right before
+            // A shfl_xor can only use a row_ror:4 operation only if a row_ror:8 has been use right before
             if constexpr (row_ror4_after_ror8) {
                 return hip_update_dpp<0x124>(x); // row_ror:4
             }
-#endif // defined(GCN)
+            // If not fallback to two dpp rather than ds_swizzle cause the last dpp instruction could be fusion with the next one
             const T y = hip_update_dpp<0x141>(x); // row_half_mirror: lane ^ 7
             return hip_update_dpp<0x01B>(y);      // quad_perm:[3,2,1,0]: lane ^ 3
         }
         case ~8: return hip_update_dpp<0x128>(x);  // row_ror:8
         default: return __shfl_xor_sync(0xffffffff, x, offset, width);
     }
- #endif // defined(RDNA)
-#else
+#else// defined(DPP_AMD_AVAILABLE)
     return __shfl_xor_sync(0xffffffff, x, offset, width);
-#endif // defined(GGML_USE_HIP)
+#endif  // defined(DPP_GCN_AVAILABLE) &&  defined(DPP_RDNA_AVAILABLE)
 }
 
 static constexpr __device__ int ggml_cuda_get_physical_warp_size() {
