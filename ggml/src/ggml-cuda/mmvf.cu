@@ -190,8 +190,9 @@ static __global__ void mul_mat_vec_f(
 #pragma unroll
                 for (int j = 0; j < ncols_dst; ++j) {
                     const float2 tmpy = y2[j*stride_col_y2 + col2];
-                    ggml_cuda_mad(sumf[j], tmpx.x, tmpy.x);
-                    ggml_cuda_mad(sumf[j], tmpx.y, tmpy.y);
+                    // SPEC_KQ_FORCE_FMA: test explicit FP32 FMA contraction.
+                    sumf[j] = __builtin_fmaf(tmpx.x, tmpy.x, sumf[j]);
+                    sumf[j] = __builtin_fmaf(tmpx.y, tmpy.y, sumf[j]);
 
                     if constexpr (has_fusion) {
                         if (use_gate) {

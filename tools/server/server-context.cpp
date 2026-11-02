@@ -95,6 +95,9 @@ const char * names[] = {
 "kq-3",
 "kq_soft_max-3",
 "kqv-3",
+"Qcur-3",
+"Kcur-3",
+"Vcur-3",
 };
 
 const bool trace_layer_output = std::strncmp(t->name, "l_out-", 6) == 0;
@@ -123,6 +126,67 @@ for (const char * name : names) {
     if (!active || !wanted) {
         return true;
     }
+
+// Insert in server_trace_layer0() after "if (!active || !wanted)" and before the trace_attn handler.
+// This callback section runs only after kq-3 has been computed (ask == false).
+if (std::strcmp(t->name, "kq-3") == 0) {
+    if (t->op != GGML_OP_MUL_MAT) {
+        std::fprintf(stderr, "SPEC_KQ unexpected_op=%s\n", ggml_op_name(t->op));
+    } else {
+        std::fprintf(stderr, "SPEC_KQ op=MUL_MAT ne=[%lld,%lld,%lld,%lld]\n",
+            (long long) t->ne[0], (long long) t->ne[1], (long long) t->ne[2], (long long) t->ne[3]);
+
+        for (int side = 0; side < 2; ++side) {
+            const ggml_tensor * src = t->src[side];
+            if (src == nullptr) {
+                std::fprintf(stderr, "SPEC_KQ missing_src=%d\n", side);
+                continue;
+            }
+
+            std::fprintf(stderr, "SPEC_KQ src=%d name=%s op=%s type=%s ne=[%lld,%lld,%lld,%lld] nb=[%zu,%zu,%zu,%zu]\n",
+                side, src->name, ggml_op_name(src->op), ggml_type_name(src->type),
+                (long long) src->ne[0], (long long) src->ne[1],
+                (long long) src->ne[2], (long long) src->ne[3],
+                src->nb[0], src->nb[1], src->nb[2], src->nb[3]);
+
+            if (src->type != GGML_TYPE_F16 && src->type != GGML_TYPE_F32) {
+                std::fprintf(stderr, "SPEC_KQ src=%d unsupported_type=%s\n", side, ggml_type_name(src->type));
+                continue;
+            }
+            const size_t element_size = ggml_type_size(src->type);
+            if (src->nb[0] != element_size) {
+                std::fprintf(stderr, "SPEC_KQ src=%d non_contiguous_inner=1\n", side);
+                continue;
+            }
+
+            // K: all cached key positions. Q: first token only, for every query head.
+            const int64_t rows = side == 0 ? src->ne[1] : 1;
+            const size_t row_bytes = (size_t) src->ne[0] * element_size;
+            const size_t count = (size_t) rows * src->ne[2] * src->ne[3];
+            std::vector<uint8_t> values(count * row_bytes);
+
+            for (int64_t i3 = 0; i3 < src->ne[3]; ++i3) {
+                for (int64_t i2 = 0; i2 < src->ne[2]; ++i2) {
+                    for (int64_t i1 = 0; i1 < rows; ++i1) {
+                        const size_t index = ((size_t) i3 * src->ne[2] + i2) * rows + i1;
+                        const size_t offset = (size_t) i3 * src->nb[3] + (size_t) i2 * src->nb[2] + (size_t) i1 * src->nb[1];
+                        ggml_backend_tensor_get(src, values.data() + index * row_bytes, offset, row_bytes);
+                    }
+                }
+            }
+
+            const std::string path = std::string(dir) + "/kq-src-" + std::to_string(side);
+            std::ofstream bin(path + ".bin", std::ios::binary);
+            bin.write(reinterpret_cast<const char *>(values.data()), values.size());
+            std::ofstream meta(path + ".meta");
+            meta << ggml_type_name(src->type) << " " << src->ne[0] << " " << src->ne[1] << " "
+                 << src->ne[2] << " " << src->ne[3] << " " << rows << "\n";
+            std::fprintf(stderr, "SPEC_KQ src=%d saved_rows=%lld bytes=%zu path=%s\n",
+                side, (long long) rows, values.size(), path.c_str());
+        }
+    }
+}
+
 
 if (trace_end) {
     done = true;
@@ -182,6 +246,33 @@ if (trace_attn) {
 
     std::fprintf(stderr, "SPEC_OP name=%s ne=[%lld,%lld,%lld,%lld]\n",
         t->name, (long long) t->ne[0], (long long) t->ne[1],
+        (long long) t->ne[2], (long long) t->ne[3]);
+
+    return true;
+}
+const bool trace_qkv = std::strcmp(t->name, "Qcur-3") == 0 ||
+                       std::strcmp(t->name, "Kcur-3") == 0 ||
+                       std::strcmp(t->name, "Vcur-3") == 0;
+
+if (trace_qkv) {
+    if (t->nb[0] != sizeof(float)) {
+        std::fprintf(stderr, "SPEC_OP_SKIP name=%s non_contiguous_inner=1\n", t->name);
+        return true;
+    }
+
+    const size_t width = (size_t) t->ne[0];
+    const size_t heads = (size_t) t->ne[1];
+    std::vector<float> values(width * heads);
+
+    for (size_t i = 0; i < heads; ++i) {
+        ggml_backend_tensor_get(t, values.data() + i * width, i * t->nb[1], width * sizeof(float));
+    }
+
+    const std::string path = std::string(dir) + "/" + t->name + ".bin";
+    std::ofstream(path, std::ios::binary).write((const char *) values.data(), values.size() * sizeof(float));
+
+    std::fprintf(stderr, "SPEC_OP name=%s count=%zu ne=[%lld,%lld,%lld,%lld]\n",
+        t->name, values.size(), (long long) t->ne[0], (long long) t->ne[1],
         (long long) t->ne[2], (long long) t->ne[3]);
 
     return true;

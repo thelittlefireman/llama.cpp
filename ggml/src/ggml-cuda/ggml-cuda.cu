@@ -88,6 +88,7 @@
 #include <mutex>
 #include <cstdarg>
 #include <cstdio>
+#include <cstring>
 #include <cstdlib>
 #include <string>
 #include <vector>
@@ -1950,6 +1951,14 @@ static bool ggml_cuda_match_shared_expert(const ggml_cgraph * graph, int routed_
 static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor * src0, const ggml_tensor * src1, ggml_tensor * dst) {
     GGML_TENSOR_BINARY_OP_LOCALS
 
+    const bool trace_kq = std::strcmp(dst->name, "kq-3") == 0;
+    if (trace_kq) {
+        std::fprintf(stderr, "SPEC_KQ_DISPATCH src0=%s src1=%s ne00=%lld ne01=%lld ne11=%lld ne2=%lld ne3=%lld\n",
+            ggml_type_name(src0->type), ggml_type_name(src1->type),
+            (long long) ne00, (long long) ne01, (long long) ne11,
+            (long long) ne2, (long long) ne3);
+    }
+
     if (ggml_cuda_op_mul_mat_use_fwht(dst) && ggml_cuda_op_fwht(ctx, src1, dst)) {
         return;
     }
@@ -1960,6 +1969,7 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
     const bool bad_padding_clear = ggml_backend_buffer_get_usage(src0->buffer) == GGML_BACKEND_BUFFER_USAGE_COMPUTE
         && ggml_nbytes(src0) != ggml_backend_buffer_get_alloc_size(src0->buffer, src0) && src0->view_src;
     if (bad_padding_clear || src1->type != GGML_TYPE_F32 || dst->type != GGML_TYPE_F32) {
+        if (trace_kq) std::fprintf(stderr, "SPEC_KQ_DISPATCH path=BLAS\n");
         ggml_cuda_mul_mat_cublas(ctx, src0, src1, dst);
         return;
     }
@@ -1970,6 +1980,7 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
     if (ggml_cuda_should_use_mmvf(src0->type, cc, warp_size, src0->ne, src0->nb, ne11)) {
         // The custom F16 vector kernel can be used over batched cuBLAS GEMM.
         // But this is only faster for GPUs without tensor cores or with a thin src0 matrix (particularly KQV in attention)
+        if (trace_kq) std::fprintf(stderr, "SPEC_KQ_DISPATCH path=MMVF ncols_dst=%lld\n", (long long) ne11);
         ggml_cuda_mul_mat_vec_f(ctx, src0, src1, nullptr, dst);
         return;
     }
@@ -1984,21 +1995,26 @@ static void ggml_cuda_mul_mat(ggml_backend_cuda_context & ctx, const ggml_tensor
         dst_vec.nb[1] = dst_vec.nb[0]*ne11;
         dst_vec.nb[2] = dst_vec.nb[1];
         dst_vec.nb[3] = dst_vec.nb[1];
+        if (trace_kq) std::fprintf(stderr, "SPEC_KQ_DISPATCH path=MMVF_TRANSPOSE ncols_dst=%lld\n", (long long) ne11);
         ggml_cuda_mul_mat_vec_f(ctx, src1, src0, nullptr, &dst_vec);
         return;
     }
     if (ggml_cuda_should_use_mmf(src0->type, cc, warp_size, src0->ne, src0->nb, ne11, /*mul_mat_id =*/ false)) {
+        if (trace_kq) std::fprintf(stderr, "SPEC_KQ_DISPATCH path=MMF ncols_dst=%lld\n", (long long) ne11);
         ggml_cuda_mul_mat_f(ctx, src0, src1, nullptr, dst);
         return;
     }
     if (ggml_cuda_should_use_mmvq(src0->type, cc, ne11)) {
+        if (trace_kq) std::fprintf(stderr, "SPEC_KQ_DISPATCH path=MMVQ\n");
         ggml_cuda_mul_mat_vec_q(ctx, src0, src1, nullptr, dst);
         return;
     }
     if (ggml_cuda_should_use_mmq(src0->type, cc, ne11, /*n_experts =*/ 0)) {
+        if (trace_kq) std::fprintf(stderr, "SPEC_KQ_DISPATCH path=MMQ\n");
         ggml_cuda_mul_mat_q(ctx, src0, src1, nullptr, dst);
         return;
     }
+    if (trace_kq) std::fprintf(stderr, "SPEC_KQ_DISPATCH path=BLAS_FALLBACK\n");
     ggml_cuda_mul_mat_cublas(ctx, src0, src1, dst);
 }
 
