@@ -1,3 +1,15 @@
+#include "ggml-backend.h"
+#include "ggml.h"
+
+#include <cstdio>
+#include <cstdlib>
+#include <cstring>
+#include <fstream>
+#include <string>
+#include <vector>
+#include "../../src/llama-ext.h"
+#include <cstdio>
+#include <cstdlib>
 #include "server-context.h"
 #include "server-chat.h"
 #include "server-common.h"
@@ -38,7 +50,224 @@
 #endif
 
 constexpr int HTTP_POLLING_SECONDS = 1;
+static bool g_trace_layer0_armed = false;
+static bool server_trace_layer0(ggml_tensor * t, bool ask, void *) {
+    static bool active = false;
+    static bool done = false;
 
+    const char * dir = std::getenv("GGML_SPEC_OP_DIR");
+if (!dir || !g_trace_layer0_armed || done) {
+    return ask ? false : true;
+}
+const char * names[] = {
+    "attn_norm-0",
+    "linear_attn_qkv_mixed-0",
+    "z-0",
+"final_output-0",
+    "beta-0",
+    "beta_sigmoid-0",
+    "alpha-0",
+    "a_softplus-0",
+    "gate-0",
+    "conv_output_raw-0",
+    "conv_output_silu-0",
+    "q_conv_predelta-0",
+    "k_conv_predelta-0",
+    "v_conv_predelta-0",
+    "attn_output-0",
+    "linear_attn_out-0",
+    "attn_residual-0",
+    "attn_post_norm-0",
+"ffn_up-0",
+"ffn_gate-0",
+"ffn_swiglu-0",
+    "ffn_out-0",
+    "l_out-0",
+"attn_norm-3",
+"kqv_out-3",
+"attn_pregate-3",
+"gate_sigmoid-3",
+"attn_gated-3",
+"attn_output-3",
+"attn_residual-3",
+"attn_post_norm-3",
+"ffn_out-3",
+"kq-3",
+"kq_soft_max-3",
+"kqv-3",
+};
+
+const bool trace_layer_output = std::strncmp(t->name, "l_out-", 6) == 0;
+const bool trace_end = std::strcmp(t->name, "result_norm") == 0;
+
+bool wanted = trace_layer_output || trace_end;
+for (const char * name : names) {
+    if (std::strcmp(t->name, name) == 0) {
+        wanted = true;
+        break;
+    }
+}
+
+    const bool start = std::strcmp(t->name, "attn_norm-0") == 0 &&
+                       (t->ne[1] == 1 || t->ne[1] == 2);
+
+    if (ask) {
+        return wanted && (active || start);
+    }
+
+    if (start && !active) {
+        active = true;
+        std::fprintf(stderr, "SPEC_OP_BEGIN n_tokens=%lld\n", (long long) t->ne[1]);
+    }
+
+    if (!active || !wanted) {
+        return true;
+    }
+
+if (trace_end) {
+    done = true;
+    std::fprintf(stderr, "SPEC_OP_END\n");
+    return true;
+}
+
+if (std::strcmp(t->name, "alpha-0") == 0 || std::strcmp(t->name, "beta-0") == 0 || strcmp(t->name, "linear_attn_out-0") == 0 || strcmp(t->name, "final_output-0") == 0 ) {
+    for (const ggml_tensor * node = t; node != nullptr; node = node->src[0]) {
+        std::fprintf(stderr, "SPEC_MATMUL_CHAIN name=%s node=%s op=%s type=%s ne=[%lld,%lld]\n",
+            t->name, node->name, ggml_op_name(node->op), ggml_type_name(node->type),
+            (long long) node->ne[0], (long long) node->ne[1]);
+
+        if (node->op == GGML_OP_MUL_MAT) {
+            const ggml_tensor * w = node->src[0];
+            const ggml_tensor * x = node->src[1];
+
+            std::fprintf(stderr,
+                "SPEC_MATMUL_REAL name=%s weight=%s type=%s ne=[%lld,%lld] input=%s type=%s ne=[%lld,%lld]\n",
+                t->name,
+                w->name, ggml_type_name(w->type), (long long) w->ne[0], (long long) w->ne[1],
+                x->name, ggml_type_name(x->type), (long long) x->ne[0], (long long) x->ne[1]);
+            break;
+        }
+    }
+}
+
+    if (t->type != GGML_TYPE_F32) {
+        std::fprintf(stderr, "SPEC_OP_SKIP name=%s type=%s\n", t->name, ggml_type_name(t->type));
+        return true;
+    }
+const bool trace_attn = std::strcmp(t->name, "kq-3") == 0 ||
+                        std::strcmp(t->name, "kq_soft_max-3") == 0 ||
+                        std::strcmp(t->name, "kqv-3") == 0;
+
+if (trace_attn) {
+    if (t->nb[0] != sizeof(float)) {
+        std::fprintf(stderr, "SPEC_OP_SKIP name=%s non_contiguous_inner=1\n", t->name);
+        return true;
+    }
+
+    const size_t row_size = (size_t) t->ne[0];
+    const size_t n_heads = (size_t) t->ne[2] * t->ne[3];
+    std::vector<float> values(row_size * n_heads);
+
+    for (int64_t i3 = 0; i3 < t->ne[3]; ++i3) {
+        for (int64_t i2 = 0; i2 < t->ne[2]; ++i2) {
+            const size_t index = (size_t) i3 * t->ne[2] + i2;
+            const size_t offset = (size_t) i3 * t->nb[3] + i2 * t->nb[2];
+            ggml_backend_tensor_get(t, values.data() + index * row_size, offset, row_size * sizeof(float));
+        }
+    }
+
+    const std::string path = std::string(dir) + "/" + t->name;
+    std::ofstream(path + ".bin", std::ios::binary).write((const char *) values.data(), values.size() * sizeof(float));
+    std::ofstream(path + ".shape") << t->ne[0] << " " << t->ne[1] << " " << t->ne[2] << " " << t->ne[3] << "\n";
+
+    std::fprintf(stderr, "SPEC_OP name=%s ne=[%lld,%lld,%lld,%lld]\n",
+        t->name, (long long) t->ne[0], (long long) t->ne[1],
+        (long long) t->ne[2], (long long) t->ne[3]);
+
+    return true;
+}
+const bool token_dim_2 =
+    std::strcmp(t->name, "beta-0") == 0 ||
+    strcmp(t->name, "final_output-0") == 0 ||
+ strncmp(t->name, "l_out-", 6) == 0 ||
+    std::strcmp(t->name, "beta_sigmoid-0") == 0 ||
+    std::strcmp(t->name, "q_conv_predelta-0") == 0 ||
+    std::strcmp(t->name, "k_conv_predelta-0") == 0 ||
+    std::strcmp(t->name, "v_conv_predelta-0") == 0 ||
+    std::strcmp(t->name, "attn_output-0") == 0;
+
+const size_t count = (size_t) t->ne[0] * (token_dim_2 ? t->ne[1] : 1);
+    const size_t bytes = count * sizeof(float);
+
+if (t->nb[0] != sizeof(float) || (token_dim_2 && t->nb[1] != (size_t) t->ne[0] * sizeof(float))) {
+        std::fprintf(stderr, "SPEC_OP_SKIP name=%s non_contiguous=1\n", t->name);
+        return true;
+    }
+
+    std::vector<float> values(count);
+    ggml_backend_tensor_get(t, values.data(), 0, bytes);
+
+    const std::string path = std::string(dir) + "/" + t->name + ".bin";
+    std::ofstream file(path, std::ios::binary);
+    if (!file) {
+        std::fprintf(stderr, "SPEC_OP_ERROR path=%s\n", path.c_str());
+        return false;
+    }
+
+    file.write(reinterpret_cast<const char *>(values.data()), bytes);
+    std::fprintf(stderr, "SPEC_OP name=%s count=%zu\n", t->name, count);
+
+
+    return true;
+}
+static void server_trace_target_logits(llama_context * ctx, int idx, llama_token selected, const char * mode) {
+    if (std::getenv("GGML_SPEC_TRACE") == nullptr) {
+        return;
+    }
+
+    const float * logits = llama_get_logits_ith(ctx, idx);
+    if (logits == nullptr) {
+        return;
+    }
+
+    const int n_vocab = llama_vocab_n_tokens(llama_model_get_vocab(llama_get_model(ctx)));
+    if (n_vocab < 2) {
+        return;
+    }
+
+    int top1 = logits[0] >= logits[1] ? 0 : 1;
+    int top2 = 1 - top1;
+
+    for (int i = 2; i < n_vocab; ++i) {
+        if (logits[i] > logits[top1]) {
+            top2 = top1;
+            top1 = i;
+        } else if (logits[i] > logits[top2]) {
+            top2 = i;
+        }
+    }
+
+    std::fprintf(stderr,
+        "SPEC_TRACE mode=%s idx=%d selected=%d top1=%d l1=%.9g top2=%d l2=%.9g margin=%.9g\n",
+        mode, idx, selected, top1, logits[top1], top2, logits[top2], logits[top1] - logits[top2]);
+g_trace_layer0_armed = true;
+
+static int trace_count = 0;
+if (const char * dir = std::getenv("GGML_SPEC_LAYER_DIR")) {
+    if (trace_count == 1) {
+        const int n_embd = llama_model_n_embd(llama_get_model(ctx));
+
+        for (uint32_t il : {0u, 1u, 2u, 4u, 8u, 16u, 32u, 48u}) {
+            const float * data = llama_get_embeddings_layer_inp(ctx, il);
+            const std::string path = std::string(dir) + "/layer-" + std::to_string(il) + ".bin";
+            std::ofstream file(path, std::ios::binary);
+            file.write(reinterpret_cast<const char *>(data + (size_t) idx * n_embd), n_embd * sizeof(float));
+        }
+    }
+    trace_count++;
+}
+
+}
 static common_speculative_output_limits server_output_limits(const common_params & params) {
     if (params.embedding ||
             (params.pooling_type != LLAMA_POOLING_TYPE_UNSPECIFIED && params.pooling_type != LLAMA_POOLING_TYPE_NONE)) {
@@ -1214,8 +1443,13 @@ private:
             params_base.load_progress_callback_user_data = &load_progress_text;
         }
 
-        llama_init = common_init_from_params(params_base);
+        //llama_init = common_init_from_params(params_base);
+if (std::getenv("GGML_SPEC_OP_DIR")) {
+    params_base.cb_eval = server_trace_layer0;
+    params_base.cb_eval_user_data = nullptr;
+}
 
+llama_init = common_init_from_params(params_base);
         model_tgt = llama_init->model();
         ctx_tgt   = llama_init->context();
 
@@ -1228,7 +1462,11 @@ private:
             SRV_ERR("failed to create_context with model '%s'\n", params_base.model.path.c_str());
             return false;
         }
-
+if (std::getenv("GGML_SPEC_LAYER_DIR")) {
+    for (uint32_t il : {0u, 1u, 2u, 4u, 8u, 16u, 32u, 48u}) {
+        llama_set_embeddings_layer_inp(ctx_tgt, il, true);
+    }
+}
         vocab = llama_model_get_vocab(model_tgt);
 
         try {
@@ -3519,7 +3757,14 @@ private:
         // make checkpoints if needed
         iterate(drafting, [&](server_slot & slot) {
             auto & draft = slot.spec_draft;
-            auto & ckpt  = slot.spec_ckpt;
+            
+if (const char * forced = std::getenv("GGML_SPEC_TEST_DRAFT_ID")) {
+    if (!draft.empty() && slot.stats.n_gen == 1) {
+        std::fprintf(stderr, "SPEC_DRAFT_OVERRIDE original=%d forced=%d\n", draft[0], std::atoi(forced));
+        draft[0] = std::atoi(forced);
+    }
+}
+auto & ckpt  = slot.spec_ckpt;
 
             slot.stats.n_draft_tokens += draft.size();
 
@@ -4466,7 +4711,8 @@ private:
             {
                 scoped_timer timer(t_sampl, n_sampl);
                 id = common_sampler_sample(slot.smpl.get(), slot.ctx_tgt, tok_idx);
-            }
+            server_trace_target_logits(slot.ctx_tgt, tok_idx, id, "normal");
+		}
 
             slot.i_batch = -1;
 
@@ -4542,8 +4788,12 @@ private:
                 } else {
                     accepted = common_sampler_sample_and_accept_n(slot.smpl.get(), slot.ctx_tgt, slot.spec_i_batch, slot.spec_draft);
                 }
-                slot.spec_i_batch.clear();
 
+for (size_t i = 0; i < accepted.size(); ++i) {
+    server_trace_target_logits(slot.ctx_tgt, slot.spec_i_batch[i], accepted[i], "mtp");
+}
+
+slot.spec_i_batch.clear();
                 GGML_ASSERT(accepted.size() >= 1);
 
                 const uint32_t n_rollback = slot.spec_draft.size() + 1 - accepted.size();

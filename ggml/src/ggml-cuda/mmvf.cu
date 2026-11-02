@@ -148,9 +148,19 @@ static __global__ void mul_mat_vec_f(
 #pragma unroll
             for (int j = 0; j < ncols_dst; ++j) {
                 const float2 tmpy = y2[j*stride_col_y2 + col2];
+     //           ggml_cuda_mad(sumf[j], tmpx.x, tmpy.x);
+       //         ggml_cuda_mad(sumf[j], tmpx.y, tmpy.y);
+
+#if defined(GGML_USE_HIP)
+                {
+#pragma clang fp reassociate(off)
+                    sumf[j] = __builtin_fmaf(tmpx.x, tmpy.x, sumf[j]);
+                    sumf[j] = __builtin_fmaf(tmpx.y, tmpy.y, sumf[j]);
+                }
+#else
                 ggml_cuda_mad(sumf[j], tmpx.x, tmpy.x);
                 ggml_cuda_mad(sumf[j], tmpx.y, tmpy.y);
-
+#endif
                 if constexpr (has_fusion) {
                     if (use_gate) {
                         ggml_cuda_mad(sumf_gate[j], tmpx_gate.x, tmpy.x);
@@ -308,12 +318,13 @@ static __global__ void mul_mat_vec_f(
     ggml_cuda_pdl_lc();
 #pragma unroll
     for (int j = 0; j < ncols_dst; ++j) {
-        sumf[j] = warp_reduce_sum<warp_size, ncols_dst == 1>(sumf[j]);
-
+        //sumf[j] = warp_reduce_sum<warp_size, ncols_dst == 1>(sumf[j]);
+sumf[j] = warp_reduce_sum<warp_size, false>(sumf[j]);
         if constexpr (has_fusion) {
             if (use_gate) {
-                sumf_gate[j] = warp_reduce_sum<warp_size, ncols_dst == 1>(sumf_gate[j]);
-            }
+                //sumf_gate[j] = warp_reduce_sum<warp_size, ncols_dst == 1>(sumf_gate[j]);
+        sumf_gate[j] = warp_reduce_sum<warp_size, false>(sumf_gate[j]);    
+	}
         }
         if (block_size > warp_size) {
             // avoid data race
@@ -328,11 +339,14 @@ static __global__ void mul_mat_vec_f(
             __syncthreads();
             if (tid < warp_size) {
                 sumf[j] = buf_iw[tid];
-                sumf[j] = warp_reduce_sum<warp_size, ncols_dst == 1>(sumf[j]);
+//                sumf[j] = warp_reduce_sum<warp_size, ncols_dst == 1>(sumf[j]);
+sumf[j] = warp_reduce_sum<warp_size, false>(sumf[j]);
                 if constexpr (has_fusion) {
                     if (use_gate) {
                         sumf_gate[j] = buf_iw_gate[tid];
-                        sumf_gate[j] = warp_reduce_sum<warp_size, ncols_dst == 1>(sumf_gate[j]);
+//                        sumf_gate[j] = warp_reduce_sum<warp_size, ncols_dst == 1>(sumf_gate[j]);
+sumf_gate[j] = warp_reduce_sum<warp_size, false>(sumf_gate[j]);
+
                     }
                 }
             }

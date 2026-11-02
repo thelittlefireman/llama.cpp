@@ -316,6 +316,13 @@ int get_mmvq_mmid_max_batch(ggml_type type, int cc) {
 }
 
 bool ggml_cuda_should_use_mmvq(enum ggml_type type, int cc, int64_t ne11) {
+    const char * disable_mmvq = std::getenv("GGML_CUDA_DISABLE_Q4_1_MMVQ");
+    if (GGML_CUDA_CC_IS_GCN(cc) && type == GGML_TYPE_Q4_1 && disable_mmvq &&
+        ne11 >= 1 && ne11 <= MMVQ_MAX_BATCH_SIZE &&
+        (std::atoi(disable_mmvq) & (1 << (ne11 - 1)))) {
+        return false;
+    }
+
     if (!ggml_is_quantized(type)) {
         return false;
     }
@@ -747,9 +754,21 @@ static __global__ void mul_mat_vec_q(
 #pragma unroll
         for (int j = 0; j < ncols_dst; ++j) {
 #pragma unroll
+
             for (int i = 0; i < rows_per_cuda_block; ++i) {
-                tmp[j][i] += vec_dot_q_cuda(
-                    vx, &y[j*stride_col_y + kby], kbx_offset + i*stride_row_x + kbx, kqs);
+//                tmp[j][i] += vec_dot_q_cuda(
+//                    vx, &y[j*stride_col_y + kby], kbx_offset + i*stride_row_x + kbx, kqs);
+if constexpr (type == GGML_TYPE_Q5_K) {
+#if defined(GGML_USE_HIP)
+#pragma clang fp reassociate(off)
+#endif
+    tmp[j][i] += vec_dot_q_cuda(
+        vx, &y[j*stride_col_y + kby], kbx_offset + i*stride_row_x + kbx, kqs);
+} else {
+    tmp[j][i] += vec_dot_q_cuda(
+        vx, &y[j*stride_col_y + kby], kbx_offset + i*stride_row_x + kbx, kqs);
+}
+
                 if constexpr (has_fusion) {
                     if (use_gate) {
                         tmp_gate[j][i] += vec_dot_q_cuda(

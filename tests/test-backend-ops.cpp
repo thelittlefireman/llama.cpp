@@ -63,7 +63,7 @@ static void init_tensor_uniform(ggml_tensor * tensor, float min = -1.0f, float m
         static const size_t n_threads = std::max<size_t>(1, std::min<size_t>(nels/1024, std::min<size_t>(4, N_THREADS/2)));
 
         auto init_thread = [&](size_t start, size_t end) {
-            thread_local std::default_random_engine gen(std::random_device{}());
+std::default_random_engine gen(1234 + static_cast<unsigned int>(start));
             std::uniform_real_distribution<float> distribution(min, max);
             for (size_t i = start; i < end; i++) {
                 data[i] = distribution(gen);
@@ -1511,7 +1511,15 @@ struct test_case {
 
             std::vector<float> f1 = tensor_to_float(t1);
             std::vector<float> f2 = tensor_to_float(t2);
+if (const char * path = std::getenv("GGML_MMVQ_TEST_DUMP")) {
+    if (t1->op == GGML_OP_MUL_MAT && t1->src[0] && t1->src[0]->type == GGML_TYPE_Q4_1) {
+        std::ofstream gpu(path, std::ios::binary);
+        gpu.write(reinterpret_cast<const char *>(f1.data()), f1.size() * sizeof(float));
 
+        std::ofstream cpu(std::string(path) + ".cpu", std::ios::binary);
+        cpu.write(reinterpret_cast<const char *>(f2.data()), f2.size() * sizeof(float));
+    }
+}
             for (size_t i = 0; i < f1.size(); i++) {
                 // check for nans
                 if (std::isnan(f1[i]) || std::isnan(f2[i])) {
@@ -10752,7 +10760,7 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
     test_cases.emplace_back(new test_mul_mat(GGML_TYPE_Q8_0, GGML_TYPE_F32, 32, 509, 2112, {1, 1}, {1, 1}));
 
     // few src1 rows (speculative verify): odd m, a single K block, long K, every tile width, broadcast batches
-    for (int64_t n : {2, 3, 5, 8, 9, 13, 16}) {
+    for (int64_t n : {1, 2, 3, 4, 5, 8, 9, 13, 16}) {
         for (auto [m, k] : std::vector<std::pair<int64_t, int64_t>>{{40, 32}, {100, 96}, {1000, 5120}, {3000, 1024}, {6144, 5120}, {17408, 512}}) {
             test_cases.emplace_back(new test_mul_mat(GGML_TYPE_Q4_0, GGML_TYPE_F32, m, n, k, {1, 1}, {1, 1}));
         }
