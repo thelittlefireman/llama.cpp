@@ -386,11 +386,7 @@ static __global__ void quantize_mmq_mxfp4(const float * __restrict__ x,
         const int64_t i0 = warp_start_offset + b * vals_per_scale + lane_id_32;
         const float xi = (i0 < ne00) ? x[base_pos + i0] : 0.0f;
 
-        float amax = fabsf(xi);
-#pragma unroll
-        for (int mask = 16; mask > 0; mask >>= 1) {
-            amax = fmaxf(amax, ggml_cuda_shfl_xor_sync<WARP_SIZE, false, true>(amax, mask));
-        }
+        const float amax = warp_reduce_max<vals_per_scale>(fabsf(xi));
 
         const uint8_t e = compute_e8m0_scale(amax);
         scales[b] = e;

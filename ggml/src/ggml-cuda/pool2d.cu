@@ -98,10 +98,13 @@ static __global__ void pool2d_nchw_kernel_warp(
         }
     }
 
+    if (op == GGML_OP_POOL_MAX) {
+        res = warp_reduce_max<WARP_SIZE, true>(res);
+    } else {
 #pragma unroll
-    for (int offset = WARP_SIZE/2; offset > 0; offset >>= 1) {
-        const To other = ggml_cuda_shfl_xor_sync<WARP_SIZE, true>(res, offset);
-        res = (op == GGML_OP_POOL_MAX) ? max(res, other) : res + other;
+        for (int offset = WARP_SIZE/2; offset > 0; offset >>= 1) {
+            res += ggml_cuda_shfl_xor_sync<WARP_SIZE, true>(res, offset);
+        }
     }
 
     if (lane == 0) {

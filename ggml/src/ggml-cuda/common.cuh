@@ -581,10 +581,47 @@ static __device__ __forceinline__ int warp_reduce_any(int x) {
 
 template<int width = WARP_SIZE, bool lane0_only = false>
 static __device__ __forceinline__ float warp_reduce_max(float x) {
+#if defined(DPP_AMD_AVAILABLE)
+    static_assert(width > 0 && width <= 64 && (width & (width - 1)) == 0, "width must be a power of two <= 64");
+    if constexpr (width > 1) {
+        // Quiet sNaNs once before the raw max instructions. Shuffles hide this property from LLVM.
+        x = __builtin_canonicalizef(x);
+    }
+    if constexpr (width >= 16) {
+        asm (
+            "v_nop\n\tv_nop\n\tv_max_f32_dpp %0, %0, %0 row_ror:8\n\t"
+            "v_nop\n\tv_nop\n\tv_max_f32_dpp %0, %0, %0 row_ror:4"
+            : "+v"(x));
+    }
+    if constexpr (width >= 4) {
+        asm (
+            "v_nop\n\tv_nop\n\tv_max_f32_dpp %0, %0, %0 quad_perm:[2,3,0,1]"
+            : "+v"(x));
+    }
+    if constexpr (width >= 2) {
+        asm (
+            "v_nop\n\tv_nop\n\tv_max_f32_dpp %0, %0, %0 quad_perm:[1,0,3,2]"
+            : "+v"(x));
+    }
+    if constexpr (width == 8) {
+        asm (
+            "v_nop\n\tv_nop\n\tv_max_f32_dpp %0, %0, %0 row_half_mirror"
+            : "+v"(x));
+    }
+    if constexpr (width >= 32) {
+        const float y = __builtin_bit_cast(float, __builtin_amdgcn_ds_swizzle(__builtin_bit_cast(int, x), 0x401F));
+        asm ("v_max_f32 %0, %0, %1" : "+v"(x) : "v"(y));
+    }
+    if constexpr (width == 64) {
+        const float y = __shfl_xor_sync(0xffffffff, x, 32, width);
+        asm ("v_max_f32 %0, %0, %1" : "+v"(x) : "v"(y));
+    }
+#else
 #pragma unroll
     for (int offset = width/2; offset > 0; offset >>= 1) {
         x = fmaxf(x, ggml_cuda_shfl_xor_sync<width, lane0_only, (width >= 16 && (width & (width - 1)) == 0)>(x, offset));
     }
+#endif // defined(DPP_AMD_AVAILABLE)
     return x;
 }
 
