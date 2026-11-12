@@ -1,0 +1,93 @@
+name: ROCm gfx906 ISA comparison (temporary)
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - .github/workflows/todo-rocm-gfx906-isa.yml
+
+permissions:
+  contents: read
+
+jobs:
+  build-isa:
+    name: gfx906 ${{ matrix.name }}
+    runs-on: ubuntu-22.04
+    timeout-minutes: 330
+    container:
+      image: ${{ matrix.image }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: rocm-7.2.4
+            image: rocm/dev-ubuntu-22.04:7.2.4-complete
+          - name: rocm-10.1
+            image: rocm/dev-ubuntu-22.04:10.1.0-full
+    steps:
+      - name: Checkout identical master source
+        uses: actions/checkout@v4
+        with:
+          ref: c83f3058b6f876f2f7e6ccbada858b2446860c85
+          persist-credentials: false
+
+      - name: Record toolchain
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "Source commit: $(git rev-parse HEAD)"
+            echo "Container: ${{ matrix.image }}"
+            echo "Date: $(date -u --iso-8601=seconds)"
+            echo "hipconfig: $(command -v hipconfig || true)"
+            hipconfig --full || true
+            hipcc --version || true
+            cmake --version || true
+            echo "ROCM_PATH=${ROCM_PATH:-}"
+          } 2>&1 | tee toolchain.txt
+
+      - name: Dependencies
+        shell: bash
+        run: |
+          set -euo pipefail
+          apt-get update
+          DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends build-essential git cmake ninja-build libssl-dev python3
+
+      - name: Configure gfx906 with HIP metrics
+        shell: bash
+        run: |
+          set -euo pipefail
+          HIP_LLVM="$(hipconfig -l)"
+          test -x "$HIP_LLVM/clang"
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_HIP_COMPILER="$HIP_LLVM/clang" \
+            -DGPU_TARGETS=gfx906 \
+            -DGGML_HIP=ON \
+            -DGGML_HIP_EXPORT_METRICS=ON \
+            -DGGML_CCACHE=OFF \
+            -DGGML_BUILD_TESTS=OFF \
+            -DGGML_BUILD_EXAMPLES=OFF \
+            -DCMAKE_BUILD_TYPE=Release 2>&1 | tee configure.log
+
+      - name: Compile ggml-hip and collect ISA
+        shell: bash
+        run: |
+          set -euo pipefail
+          cmake --build build --target ggml-hip --parallel 2 2>&1 | tee build.log
+          find build -type f -name '*.s' -print | sort > isa-file-list.txt
+          echo "Saved ISA files: $(wc -l < isa-file-list.txt)"
+          test -s isa-file-list.txt
+
+      - name: Upload complete ISA and metrics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gfx906-isa-${{ matrix.name }}
+          if-no-files-found: warn
+          retention-days: 30
+          path: |
+            build/**/*.s
+            build/CMakeCache.txt
+            configure.log
+            build.log
+            toolchain.txt
+            isa-file-list.txt
