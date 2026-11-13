@@ -339,6 +339,8 @@ static __global__ void flash_attn_ext_vec(
 
         ggml_cuda_syncwarp(); // Needed for KQ synchronization.
 
+        // Precompute V row addresses to avoid excessive LLVM vmcnt(0) waits
+        // and preserve memory-level parallelism with DPP reductions.
         const int k_V_base = threadIdx.y*WARP_SIZE + (nthreads_V == WARP_SIZE ? 0 : threadIdx.x / nthreads_V);
         const char * V_rows[WARP_SIZE/V_cols_per_iter];
 #pragma unroll
