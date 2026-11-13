@@ -444,14 +444,14 @@ static __device__ __forceinline__ void quantize_q8_1_to_shared(
         amax = fmaxf(amax, fabsf(vals[l]));
         sum += vals[l];
     }
-#if defined(GGML_USE_HIP) && defined(GCN)
+#if defined(GGML_USE_HIP) && defined(DPP_AMD_AVAILABLE)
     amax = ggml_cuda_fattn_reduce_max<QI8_1>(amax);
 #else
 #pragma unroll
     for (int mask = QI8_1/2; mask > 0; mask >>= 1) {
         amax = fmaxf(amax, ggml_cuda_shfl_xor_sync<32>(amax, mask));
     }
-#endif // defined(GGML_USE_HIP) && defined(GCN)
+#endif // defined(GGML_USE_HIP) && defined(DPP_AMD_AVAILABLE)
     sum = warp_reduce_sum<QI8_1, true>(sum);
 
     const float d = amax / 127;
