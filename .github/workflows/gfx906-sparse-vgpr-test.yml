@@ -1,4 +1,4 @@
-name: gfx906 sparse tile VGPR check
+name: gfx906 sparse tile ISA and VGPR diagnostics
 
 on:
   push:
@@ -28,6 +28,7 @@ jobs:
           cmake -B build -S . -G Ninja \
             -DCMAKE_HIP_COMPILER="$(hipconfig -l)/clang" \
             -DGPU_TARGETS=gfx906 \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
             -DGGML_HIP=ON \
             -DGGML_HIP_EXPORT_METRICS=ON \
             -DGGML_CCACHE=OFF \
@@ -37,7 +38,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          mapfile -t targets < <(ninja -C build -t targets all | awk -F': ' '$1 ~ /\/fattn-tile-instance-.*\.cu\.o$/ {print $1}')
+          mapfile -t targets < <(ninja -C build -t targets all | awk -F': ' '$1 ~ /\/fattn-tile-instance-dkq(128|256|320|512|576)-dv[0-9]+\.cu\.o$/ {print $1}')
           test "${#targets[@]}" -gt 0
           printf '%s\n' "${targets[@]}"
           ninja -C build -j 1 "${targets[@]}" 2>&1 | tee metrics.log
@@ -67,6 +68,70 @@ jobs:
               sys.exit("Missing sparse kernel resource metrics")
           PY
 
+      - name: Export ISA and register allocation
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p diagnostics
+          python3 - <<'PY'
+          import json
+          import pathlib
+          import re
+          import shlex
+          import subprocess
+
+          out = pathlib.Path("diagnostics").resolve()
+          metrics = pathlib.Path("metrics.log").read_text()
+          pattern = re.compile(r"Function Name: (\S*flash_attn_tileILi(\d+)ELi(\d+)ELi1ELi\d+ELb0ELb[01]EE\S*)")
+          names = {}
+          for name, dkq, dv in pattern.findall(metrics):
+              names.setdefault((int(dkq), int(dv)), set()).add(name)
+
+          commands = json.loads(pathlib.Path("build/compile_commands.json").read_text())
+          wanted = {(128, 128), (256, 256), (320, 256), (512, 512), (576, 512)}
+          done = set()
+          for entry in commands:
+              src = pathlib.Path(entry["file"])
+              match = re.fullmatch(r"fattn-tile-instance-dkq(\d+)-dv(\d+)\.cu", src.name)
+              if not match:
+                  continue
+              key = tuple(map(int, match.groups()))
+              if key not in wanted:
+                  continue
+              assert key in names, f"No kernel names for {key}"
+              cmd = entry.get("arguments") or shlex.split(entry["command"])
+              args = []
+              i = 0
+              while i < len(cmd):
+                  arg = cmd[i]
+                  if arg in ("-o", "-MF", "-MT", "-MQ"):
+                      i += 2
+                      continue
+                  if arg not in ("-c", "-MD", "-MMD", "-MP"):
+                      args.append(arg)
+                  i += 1
+              stem = out / src.stem
+              asm = stem.with_suffix(".s")
+              args += ["--offload-device-only", "-S", "-o", str(asm),
+                       "-mllvm", "-filter-print-funcs=" + ",".join(sorted(names[key])),
+                       "-mllvm", "-print-before=greedy", "-mllvm", "-print-after=greedy",
+                       "-mllvm", "-print-after=virtregrewriter"]
+              stem.with_suffix(".command.txt").write_text(shlex.join(args) + "\n")
+              print(f"Exporting {src.name}", flush=True)
+              log = stem.with_suffix(".regalloc.log")
+              with log.open("w") as handle:
+                  result = subprocess.run(args, cwd=entry["directory"], stdout=handle, stderr=subprocess.STDOUT)
+              if result.returncode:
+                  print("\n".join(log.read_text(errors="replace").splitlines()[-30:]), flush=True)
+                  result.check_returncode()
+              assert asm.stat().st_size > 0, f"Empty ISA for {src.name}"
+              assert "Greedy Register Allocator" in log.read_text(errors="replace"), f"No greedy allocator dump for {src.name}"
+              done.add(key)
+          assert done == wanted, f"Missing translation units: {wanted - done}"
+          PY
+          cp build/compile_commands.json diagnostics/
+          du -h diagnostics/*
+
       - name: Check major VGPR spills
         run: python3 scripts/hip/gcn-cdna-vgpr-check.py metrics.log
 
@@ -74,7 +139,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: gfx906-tile-vgpr
+          name: gfx906-tile-isa-vgpr
           path: |
             metrics.log
             tile-vgpr.tsv
+            diagnostics/
