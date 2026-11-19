@@ -1,0 +1,133 @@
+name: gfx906 fdot2 builtin resource comparison
+
+on:
+  push:
+    branches: [test_HIP_FDOT2_BUILTIN_GFX906]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  metrics:
+    runs-on: ubuntu-22.04
+    container: rocm/dev-ubuntu-22.04:7.2.1
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - variant: baseline
+            ref: 2cbe0ec429b849a88664e0f62388fc92a5abd699
+          - variant: builtin
+            ref: a1fbc88bee7611f2bda5f4d2815ab087e69a7bdd
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          ref: ${{ matrix.ref }}
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential git cmake ninja-build rocblas-dev hipblas-dev libssl-dev python3
+      - name: Configure
+        run: |
+          "$(hipconfig -l)/clang" --version
+          git rev-parse HEAD
+          git grep -n 'ggml_cuda_mad(' -- ggml/src/ggml-cuda
+          cmake -B build -S . -G Ninja \
+            -DCMAKE_HIP_COMPILER="$(hipconfig -l)/clang" \
+            -DGPU_TARGETS=gfx906 -DGGML_HIP=ON -DGGML_HIP_EXPORT_METRICS=ON \
+            -DGGML_CCACHE=OFF -DCMAKE_BUILD_TYPE=Release
+      - name: Compile affected translation units
+        run: |
+          mapfile -t targets < <(ninja -C build -t targets all | awk -F': ' '$1 ~ /\/(fattn[^/]*|mmvf)\.cu\.o$/ {print $1}')
+          printf '%s\n' "${targets[@]}"
+          test "${#targets[@]}" -gt 0
+          ninja -C build -j 1 "${targets[@]}" 2>&1 | tee metrics.log
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: metrics-${{ matrix.variant }}
+          path: metrics.log
+
+  compare:
+    needs: metrics
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: metrics-*
+          path: reports
+      - name: Compare kernel resources
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          import csv
+          import os
+          import re
+          from collections import Counter
+          from pathlib import Path
+
+          fields = ["VGPRs", "VGPRs Spill", "Occupancy [waves/SIMD]", "TotalSGPRs", "SGPRs Spill", "ScratchSize [bytes/lane]", "LDS Size [bytes/block]"]
+
+          def parse(path):
+              kernels = {}
+              unit = None
+              key = None
+              for line in path.read_text(errors="replace").splitlines():
+                  match = re.search(r"Building HIP object (.+\.cu\.o)", line)
+                  if match:
+                      unit = match.group(1)
+                      key = None
+                  match = re.search(r"Function Name: (\S+)", line)
+                  if match and unit:
+                      key = (unit, match.group(1))
+                      kernels[key] = {}
+                  if key:
+                      for field in fields:
+                          match = re.search(re.escape(field) + r":\s+(\d+)", line)
+                          if match:
+                              kernels[key][field] = int(match.group(1))
+              if not kernels:
+                  raise RuntimeError(f"No resource records: {path}")
+              incomplete = [key for key, values in kernels.items() if any(field not in values for field in fields)]
+              if incomplete:
+                  raise RuntimeError(f"Incomplete resource records: {len(incomplete)} in {path}")
+              return kernels
+
+          before = parse(Path("reports/metrics-baseline/metrics.log"))
+          after = parse(Path("reports/metrics-builtin/metrics.log"))
+          common = before.keys() & after.keys()
+          if not common:
+              raise RuntimeError("No matching kernels")
+          changes = []
+          counts = {field: Counter() for field in fields}
+          with open("kernel-resources.tsv", "w") as output:
+              writer = csv.writer(output, delimiter="\t")
+              writer.writerow(["object", "kernel", "status"] + [f"{field} {suffix}" for field in fields for suffix in ("before", "after", "delta")])
+              for key in sorted(before.keys() | after.keys()):
+                  a, b = before.get(key), after.get(key)
+                  status = "matched" if a is not None and b is not None else "removed" if b is None else "added"
+                  row = []
+                  for field in fields:
+                      x = a[field] if a is not None else None
+                      y = b[field] if b is not None else None
+                      delta = y-x if x is not None and y is not None else None
+                      row.extend([x, y, delta])
+                      if delta is not None:
+                          counts[field]["up" if delta > 0 else "down" if delta < 0 else "same"] += 1
+                  writer.writerow([*key, status, *row])
+                  if status == "matched" and any(a[field] != b[field] for field in fields):
+                      changes.append(key)
+          with open(os.environ["GITHUB_STEP_SUMMARY"], "a") as summary:
+              print(f"Matched: {len(common)} | Changed: {len(changes)} | Removed: {len(before.keys()-after.keys())} | Added: {len(after.keys()-before.keys())}", file=summary)
+              print("\n| Resource | Decreased | Unchanged | Increased |\n|---|---:|---:|---:|", file=summary)
+              for field, c in counts.items():
+                  print(f"| {field} | {c['down']} | {c['same']} | {c['up']} |", file=summary)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gfx906-fdot2-comparison
+          path: kernel-resources.tsv
