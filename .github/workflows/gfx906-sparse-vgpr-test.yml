@@ -1,0 +1,80 @@
+name: gfx906 sparse tile VGPR check
+
+on:
+  push:
+    branches: [test_GCN_SPARSE_FATTN_GFX906_SPILLS]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  vgpr:
+    runs-on: ubuntu-22.04
+    container: rocm/dev-ubuntu-22.04:7.2.1
+    steps:
+      - uses: actions/checkout@v6
+
+      - name: Dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential git cmake ninja-build rocblas-dev hipblas-dev libssl-dev python3
+
+      - name: Configure gfx906
+        shell: bash
+        run: |
+          set -euo pipefail
+          "$(hipconfig -l)/clang" --version
+          cmake -B build -S . -G Ninja \
+            -DCMAKE_HIP_COMPILER="$(hipconfig -l)/clang" \
+            -DGPU_TARGETS=gfx906 \
+            -DGGML_HIP=ON \
+            -DGGML_HIP_EXPORT_METRICS=ON \
+            -DGGML_CCACHE=OFF \
+            -DCMAKE_BUILD_TYPE=Release
+
+      - name: Compile tile kernels
+        shell: bash
+        run: |
+          set -euo pipefail
+          mapfile -t targets < <(ninja -C build -t targets all | awk -F': ' '$1 ~ /\/fattn-tile-instance-.*\.cu\.o$/ {print $1}')
+          test "${#targets[@]}" -gt 0
+          printf '%s\n' "${targets[@]}"
+          ninja -C build -j 1 "${targets[@]}" 2>&1 | tee metrics.log
+
+      - name: Report tile VGPR usage
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY' | tee tile-vgpr.tsv
+          import re
+          import runpy
+          import sys
+
+          parse_log = runpy.run_path("scripts/hip/gcn-cdna-vgpr-check.py")["parse_log_file"]
+          functions = parse_log("metrics.log")
+          pattern = re.compile(r"flash_attn_tileILi(\d+)ELi(\d+)ELi(\d+)ELi(\d+)ELb([01])ELb([01])EE")
+          rows = {}
+          for name, data in functions.items():
+              match = pattern.search(name)
+              if match:
+                  rows[tuple(map(int, match.groups()))] = (data["vgprs"], data["spill"])
+          print("DKQ\tDV\tncols1\tncols2\tsoftcap\tsparse\tVGPR\tSpills\tTotal")
+          for key, (vgpr, spill) in sorted(rows.items()):
+              print(*key, vgpr, spill, vgpr + spill, sep="\t")
+          sparse = [key for key in rows if key[-1] == 1]
+          if not sparse or any(rows[key][0] == 0 for key in sparse):
+              sys.exit("Missing sparse kernel resource metrics")
+          PY
+
+      - name: Check major VGPR spills
+        run: python3 scripts/hip/gcn-cdna-vgpr-check.py metrics.log
+
+      - name: Upload metrics
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: gfx906-tile-vgpr
+          path: |
+            metrics.log
+            tile-vgpr.tsv
