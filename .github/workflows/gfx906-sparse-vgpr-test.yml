@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        variant: [checked-only, unchecked-only, offset32, v-loop]
+        variant: [checked-only, unchecked-only, offset32, v-loop, v-outer-loop]
     name: gfx906 ${{ matrix.variant }}
     runs-on: ubuntu-22.04
     container: rocm/dev-ubuntu-22.04:7.2.1
@@ -32,11 +32,13 @@ jobs:
         run: |
           set -euo pipefail
           python3 - <<'PY'
+          import difflib
           import os
           import pathlib
 
           path = pathlib.Path("ggml/src/ggml-cuda/fattn-tile.cuh")
-          text = path.read_text()
+          original = path.read_text()
+          text = original
           variant = os.environ["VARIANT"]
           if variant in ("checked-only", "unchecked-only"):
               marker = "    if (ncols2 == 1 || use_sparse) {"
@@ -59,11 +61,18 @@ jobs:
               marker = "#pragma unroll\n        for (int k1 = 0; k1 < nbatch_V; k1 += np) {"
               assert text.count(marker) == 2
               text = text.replace(marker, "#pragma unroll 1\n        for (int k1 = 0; k1 < nbatch_V; k1 += np) {")
+          elif variant == "v-outer-loop":
+              marker = "#pragma unroll\n    for (int k0 = 0; k0 < nbatch_fa; k0 += nbatch_V) {"
+              assert text.count(marker) == 1
+              text = text.replace(marker, "#pragma unroll 1\n    for (int k0 = 0; k0 < nbatch_fa; k0 += nbatch_V) {")
           else:
               raise ValueError(variant)
+          assert text != original
+          patch = "".join(difflib.unified_diff(original.splitlines(keepends=True), text.splitlines(keepends=True), fromfile=str(path), tofile=str(path)))
+          pathlib.Path("variant.patch").write_text(patch)
+          print(patch)
           path.write_text(text)
           PY
-          git diff -- ggml/src/ggml-cuda/fattn-tile.cuh | tee variant.patch
 
       - name: Configure gfx906
         shell: bash
