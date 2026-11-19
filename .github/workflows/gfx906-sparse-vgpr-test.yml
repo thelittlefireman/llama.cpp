@@ -10,6 +10,11 @@ permissions:
 
 jobs:
   vgpr:
+    strategy:
+      fail-fast: false
+      matrix:
+        variant: [checked-only, unchecked-only, offset32, v-loop]
+    name: gfx906 ${{ matrix.variant }}
     runs-on: ubuntu-22.04
     container: rocm/dev-ubuntu-22.04:7.2.1
     steps:
@@ -19,6 +24,46 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y build-essential git cmake ninja-build rocblas-dev hipblas-dev libssl-dev python3
+
+      - name: Apply diagnostic variant
+        shell: bash
+        env:
+          VARIANT: ${{ matrix.variant }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import pathlib
+
+          path = pathlib.Path("ggml/src/ggml-cuda/fattn-tile.cuh")
+          text = path.read_text()
+          variant = os.environ["VARIANT"]
+          if variant in ("checked-only", "unchecked-only"):
+              marker = "    if (ncols2 == 1 || use_sparse) {"
+              assert text.count(marker) == 1
+              checked = "true" if variant == "checked-only" else "false"
+              branch = """    if constexpr (use_sparse) {
+                  for (int k_VKQ_0 = blockIdx.y*nbatch_fa; k_VKQ_0 < k_VKQ_max; k_VKQ_0 += gridDim.y*nbatch_fa) {
+                      constexpr bool oob_check = CHECKED;
+                      flash_attn_tile_iter<warp_size, nwarps, ncols1, ncols2, DKQ, DV, nbatch_fa, nbatch_K, use_logit_softcap, oob_check, use_sparse>
+                          (Q_tmp, K_h2, V_h2, maskh, sparse_indices, ne01, logit_softcap, slope, KQ, KV_tmp,
+                          stride_K2, stride_V2, stride_mask, KQ_max, KQ_sum, VKQ, k_VKQ_0, k_VKQ_max, col_Q_0);
+                  }
+              } else if (ncols2 == 1) {""".replace("CHECKED", checked)
+              text = text.replace(marker, branch)
+          elif variant == "offset32":
+              marker = "(use_sparse ? int64_t(i_KV_offset)*stride_KV : i_KV_offset*stride_KV)"
+              assert text.count(marker) == 2
+              text = text.replace(marker, "(i_KV_offset*stride_KV)")
+          elif variant == "v-loop":
+              marker = "#pragma unroll\n        for (int k1 = 0; k1 < nbatch_V; k1 += np) {"
+              assert text.count(marker) == 2
+              text = text.replace(marker, "#pragma unroll 1\n        for (int k1 = 0; k1 < nbatch_V; k1 += np) {")
+          else:
+              raise ValueError(variant)
+          path.write_text(text)
+          PY
+          git diff -- ggml/src/ggml-cuda/fattn-tile.cuh | tee variant.patch
 
       - name: Configure gfx906
         shell: bash
@@ -133,14 +178,16 @@ jobs:
           du -h diagnostics/*
 
       - name: Check major VGPR spills
+        continue-on-error: true
         run: python3 scripts/hip/gcn-cdna-vgpr-check.py metrics.log
 
       - name: Upload metrics
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: gfx906-tile-isa-vgpr
+          name: gfx906-tile-isa-vgpr-${{ matrix.variant }}
           path: |
             metrics.log
             tile-vgpr.tsv
+            variant.patch
             diagnostics/
