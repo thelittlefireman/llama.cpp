@@ -1530,6 +1530,15 @@ jobs:
           - ROCM_VERSION: "10.0.0"
             gpu_targets: "gfx908;gfx90a;gfx942;gfx950;gfx1010;gfx1011;gfx1012;gfx1030;gfx1031;gfx1032;gfx1033;gfx1034;gfx1035;gfx1036;gfx1100;gfx1101;gfx1102;gfx1103;gfx1150;gfx1151;gfx1152;gfx1200;gfx1201"
             build: 'x64'
+            pip_index: "https://stable.repo.amd.com/rocm/whl-next/"
+            pip_package: "rocm[libraries,devel]==10.0.0"
+            pip_options: ''
+          - ROCM_VERSION: "nightly"
+            gpu_targets: "gfx906;gfx942"
+            build: 'x64'
+            pip_index: "https://nightly.repo.amd.com/rocm/core/whl-next/"
+            pip_package: "rocm[libraries,devel,device-gfx906,device-gfx942]"
+            pip_options: '--pre'
 
     steps:
       - name: Clone
@@ -1583,7 +1592,7 @@ jobs:
           # libraries = HIP runtime and CMake configs needed for linking
           # devel = compilers, headers, static libs
           python -m pip install --upgrade pip
-          python -m pip install --index-url https://stable.repo.amd.com/rocm/whl-next/ "rocm[libraries,devel]==${{ matrix.ROCM_VERSION }}"
+          python -m pip install ${{ matrix.pip_options }} --index-url "${{ matrix.pip_index }}" "${{ matrix.pip_package }}"
 
           # Get ROCm installation paths using the rocm-sdk CLI tool
           ROCM_PATH=$(rocm-sdk path --root)
