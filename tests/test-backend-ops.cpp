@@ -9120,6 +9120,49 @@ struct test_flash_attn_ext : public test_case {
     }
 };
 
+struct test_flash_attn_atflash : public test_flash_attn_ext {
+    const int periods;
+    const bool neox;
+
+    test_flash_attn_atflash(int64_t head_size, int64_t n_queries, int64_t n_kv, int periods, bool neox)
+        : test_flash_attn_ext(head_size, head_size, 4, {2, 1}, n_kv, n_queries, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16),
+          periods(periods), neox(neox) {}
+
+    std::string vars() override {
+        return test_flash_attn_ext::vars() + ",atflash_periods=" + std::to_string(periods) + ",neox=" + std::to_string(neox);
+    }
+
+    ggml_tensor * build_graph(ggml_context * ctx) override {
+        ggml_tensor * out = test_flash_attn_ext::build_graph(ctx);
+        ggml_tensor * q_pos   = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, nb);
+        ggml_tensor * k_pos   = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, kv);
+        ggml_tensor * windows = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, hsk/2);
+        ggml_set_name(q_pos,   "atflash_q_pos");
+        ggml_set_name(k_pos,   "atflash_k_pos");
+        ggml_set_name(windows, "atflash_windows");
+        ggml_flash_attn_ext_set_atflash(out, q_pos, k_pos, windows, neox);
+        return out;
+    }
+
+    void initialize_tensors(ggml_context * ctx) override {
+        test_flash_attn_ext::initialize_tensors(ctx);
+        for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != nullptr; t = ggml_get_next_tensor(ctx, t)) {
+            if (strcmp(t->name, "atflash_q_pos") == 0) {
+                int32_t * data = (int32_t *) t->data;
+                for (int64_t i = 0; i < nb; ++i) data[i] = int32_t(kv + i);
+            } else if (strcmp(t->name, "atflash_k_pos") == 0) {
+                int32_t * data = (int32_t *) t->data;
+                for (int64_t i = 0; i < kv; ++i) data[i] = int32_t((i*37) % kv);
+            } else if (strcmp(t->name, "atflash_windows") == 0) {
+                int32_t * data = (int32_t *) t->data;
+                for (int64_t l = 0; l < hsk/2; ++l) {
+                    data[l] = int32_t(2.0*3.14159265358979323846*periods*std::pow(10000.0, 2.0*l/hsk));
+                }
+            }
+        }
+    }
+};
+
 // large Q values, so the online softmax has to rescale the partial results
 struct test_flash_attn_ext_large_logits : public test_flash_attn_ext {
     static constexpr int q_range = 20;
@@ -12868,6 +12911,14 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
             test_cases.emplace_back(new test_pad_ext(GGML_TYPE_F32, {512, 512, 1, 1}, 0, 1, 0, 1, 0, 0, 0, 0, tfrm, circular));
             test_cases.emplace_back(new test_pad_ext(GGML_TYPE_F32, {11, 22, 33, 44}, 1, 2, 3, 4, 5, 6, 7, 8, tfrm, circular));
             test_cases.emplace_back(new test_pad_ext(GGML_TYPE_F32, {11, 22, 33, 44}, 0, 2, 0, 4, 0, 6, 0, 8, tfrm, circular));
+        }
+    }
+
+    for (int periods : { 1, 2 }) {
+        for (bool neox : { false, true }) {
+            for (int nb : { 1, 8 }) {
+                test_cases.emplace_back(new test_flash_attn_atflash(128, nb, 512, periods, neox));
+            }
         }
     }
 
