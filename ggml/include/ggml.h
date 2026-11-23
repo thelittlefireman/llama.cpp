@@ -2550,6 +2550,14 @@ extern "C" {
             struct ggml_tensor * a,
             int32_t              n_kv_max);
 
+    // Experimental per-RoPE-wavelength QK pruning. Position tensors are indexed by query and KV-cache cell.
+    GGML_API void ggml_flash_attn_ext_set_atflash(
+            struct ggml_tensor * a,
+            struct ggml_tensor * q_pos,
+            struct ggml_tensor * k_pos,
+            struct ggml_tensor * windows,
+            bool                 neox);
+
     GGML_API void ggml_flash_attn_ext_add_sinks(
             struct ggml_tensor * a,
             struct ggml_tensor * sinks);
