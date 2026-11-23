@@ -1029,7 +1029,8 @@ static __global__ void flash_attn_combine_results(
         VKQ_denominator += KQ_max_scale * meta[l].y;
     }
 
-    dst[tid] = VKQ_numerator / VKQ_denominator;
+    // All keys pruned or masked: VKQ_denominator is 0, output 0 like the CPU reference.
+    dst[tid] = VKQ_denominator != 0.0f ? VKQ_numerator / VKQ_denominator : 0.0f;
 }
 
 template <int DV, int ncols1, int ncols2>
