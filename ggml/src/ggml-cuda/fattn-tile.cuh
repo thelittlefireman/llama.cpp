@@ -673,8 +673,8 @@ static __device__ __forceinline__ void flash_attn_tile_iter(
                 KQ_acc[(i_KQ_0/(np*warp_size))*cpw + jc0] = logit_softcap * tanhf(KQ_acc[(i_KQ_0/(np*warp_size))*cpw + jc0]);
             }
 
-            if (atflash_windows && col_Q_0 + j < int(ne01.z) && k_VKQ_0 + i_KQ < n_kv &&
-                    atflash_q_pos[sequence*int(ne01.z) + col_Q_0 + j] - atflash_k_pos[sequence*n_kv + k_VKQ_0 + i_KQ] > atflash_windows[DKQ/2 - 1]) {
+            if (atflash_windows && j < int(ne01.z) && k_VKQ_0 + i_KQ < n_kv &&
+                    atflash_q_pos[sequence*int(ne01.z) + j] - atflash_k_pos[sequence*n_kv + k_VKQ_0 + i_KQ] > atflash_windows[DKQ/2 - 1]) {
                 KQ_acc[(i_KQ_0/(np*warp_size))*cpw + jc0] = -INFINITY;
             }
             if (!oob_check || i_KQ < k_VKQ_sup) {
