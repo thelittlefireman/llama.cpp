@@ -8826,6 +8826,10 @@ static void ggml_compute_forward_flash_attn_ext_f16_one_chunk(
     const ggml_tensor * mask  = dst->src[3];
     const ggml_tensor * sinks = dst->src[4];
     const ggml_tensor * kv_rows = dst->src[5];
+    const int32_t * atflash_q_pos   = dst->src[6] ? (const int32_t *) dst->src[6]->data : nullptr;
+    const int32_t * atflash_k_pos   = dst->src[7] ? (const int32_t *) dst->src[7]->data : nullptr;
+    const int32_t * atflash_windows = dst->src[8] ? (const int32_t *) dst->src[8]->data : nullptr;
+    const int32_t atflash_layout   = ggml_get_op_params_i32(dst, 5);
 
     GGML_TENSOR_LOCALS(int64_t, neq, q,   ne)
     GGML_TENSOR_LOCALS(size_t,  nbq, q,   nb)
@@ -8948,7 +8952,23 @@ static void ggml_compute_forward_flash_attn_ext_f16_one_chunk(
             float s; // KQ value
 
             const char * k_data = (const char *) k->data + (ik1*nbk1 + ik2*nbk2 + ik3*nbk3);
-            kq_vec_dot(DK, &s, 0, k_data, 0, Q_q, 0, 1);
+            if (atflash_windows) {
+                GGML_ASSERT(k->type == GGML_TYPE_F16 && atflash_q_pos && atflash_k_pos && (atflash_layout == 1 || atflash_layout == 2));
+                const int32_t distance = atflash_q_pos[iq3*neq1 + iq1] - atflash_k_pos[ik3*nek1 + ik1];
+                if (distance > atflash_windows[DK/2 - 1]) {
+                    continue;
+                }
+                const ggml_fp16_t * kh = (const ggml_fp16_t *) k_data;
+                s = 0.0f;
+                for (int d = 0; d < DK; ++d) {
+                    const int pair = atflash_layout == 2 ? d % (DK/2) : d/2;
+                    if (distance <= atflash_windows[pair]) {
+                        s += GGML_CPU_FP16_TO_FP32(Q_q[d])*GGML_CPU_FP16_TO_FP32(kh[d]);
+                    }
+                }
+            } else {
+                kq_vec_dot(DK, &s, 0, k_data, 0, Q_q, 0, 1);
+            }
 
             s = s*scale; // scale KQ value
 
@@ -9510,7 +9530,7 @@ static void ggml_compute_forward_flash_attn_ext_f16(
         const int64_t dr = (nr + nchunk - 1) / nchunk;
 
         static constexpr int64_t Q_TILE_SZ  = ggml_fa_tile_config::Q;
-        bool use_tiled = !use_ref &&
+        bool use_tiled = !use_ref && !dst->src[8] &&
                                (q->type == GGML_TYPE_F32 &&
                                 kv_is_f32_or_f16 &&
                                 k->type == v->type &&
