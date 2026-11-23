@@ -145,7 +145,8 @@ static llm_attn_mask build_attn_inp_attn_mask(
     if (periods > 0) {
         if (n_kv_rows != 0 || !cparams.flash_attn || cparams.training || ubatch.n_seqs_unq != 1 || hparams.swa_type != LLAMA_SWA_TYPE_NONE ||
                 (hparams.rope_type != LLAMA_ROPE_TYPE_NORM && hparams.rope_type != LLAMA_ROPE_TYPE_NEOX) ||
-                hparams.rope_scaling_type_train != LLAMA_ROPE_SCALING_TYPE_NONE || cparams.rope_freq_scale != 1.0f ||
+                (hparams.rope_scaling_type_train != LLAMA_ROPE_SCALING_TYPE_NONE && hparams.rope_scaling_type_train != LLAMA_ROPE_SCALING_TYPE_LINEAR) ||
+                cparams.rope_freq_scale != 1.0f ||
                 hparams.n_rot() != hparams.n_embd_head_k() || hparams.n_rot() < 2 || hparams.n_rot() > 256 ||
                 hparams.n_rot() % 2 != 0 || !std::isfinite(cparams.rope_freq_base) || cparams.rope_freq_base <= 1.0f) {
             throw std::runtime_error("ATFlash only supports single-stream full-dimension standard RoPE inference with unscaled frequencies and Flash Attention");
