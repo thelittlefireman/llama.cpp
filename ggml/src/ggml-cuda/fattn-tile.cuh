@@ -549,34 +549,42 @@ static __device__ __forceinline__ void flash_attn_tile_iter_KQ(
         for (int i_KQ_0 = 0; i_KQ_0 < nbatch_fa; i_KQ_0 += np*warp_size) {
 #pragma unroll
             for (int jc0 = 0; jc0 < cpw; ++jc0) {
+                const int jc = jc0 + (threadIdx.y / np)*cpw;
+                const int query = col_Q_0 + jc/ncols2;
+                const int key = k_VKQ_0 + i_KQ_0 + (threadIdx.y % np)*warp_size + threadIdx.x;
+                int distance = 0;
+                if (atflash_windows && query < n_q && key < n_kv) {
+                    const int key_pos = atflash_k_pos[sequence*n_kv + key];
+                    distance = key_pos < 0 ? 0 : atflash_q_pos[sequence*n_q + query] - key_pos;
+                }
+                if (!atflash_windows) {
 #pragma unroll
-                for (int k = 0; k < cpy_ne; ++k) {
-                    const int query = col_Q_0 + jc/ncols2;
-                    const int key = k_VKQ_0 + i_KQ_0 + (threadIdx.y % np)*warp_size + threadIdx.x;
-                    int distance = 0;
-                    if (atflash_windows && query < n_q && key < n_kv) {
-                        const int key_pos = atflash_k_pos[sequence*n_kv + key];
-                        distance = key_pos < 0 ? 0 : atflash_q_pos[sequence*n_q + query] - key_pos;
+                    for (int k = 0; k < cpy_ne; ++k) {
+                        ggml_cuda_mad(KQ_acc[i_KQ_0/(np*warp_size)*cpw + jc0], K_k[i_KQ_0/(np*warp_size)][k], Q_k[jc0][k]);
                     }
+                } else {
+#pragma unroll
+                    for (int k = 0; k < cpy_ne; ++k) {
 #ifdef FAST_FP16_AVAILABLE
-                    const int dim = k_KQ_0 + 2*(k_KQ_1 + k);
-                    const int pair0 = atflash_layout == 2 ? dim % (DKQ/2) : dim/2;
-                    const int pair1 = atflash_layout == 2 ? (dim + 1) % (DKQ/2) : dim/2;
-                    const bool keep0 = !atflash_windows || distance <= atflash_windows[pair0];
-                    const bool keep1 = !atflash_windows || distance <= atflash_windows[pair1];
-                    if (keep0 && keep1) {
-                        ggml_cuda_mad(KQ_acc[i_KQ_0/(np*warp_size)*cpw + jc0], K_k[i_KQ_0/(np*warp_size)][k], Q_k[jc0][k]);
-                    } else if (keep0 || keep1) {
-                        const half2 keep = make_half2(keep0 ? 1.0f : 0.0f, keep1 ? 1.0f : 0.0f);
-                        ggml_cuda_mad(KQ_acc[i_KQ_0/(np*warp_size)*cpw + jc0], K_k[i_KQ_0/(np*warp_size)][k], Q_k[jc0][k]*keep);
-                    }
+                        const int dim = k_KQ_0 + 2*(k_KQ_1 + k);
+                        const int pair0 = atflash_layout == 2 ? dim % (DKQ/2) : dim/2;
+                        const int pair1 = atflash_layout == 2 ? (dim + 1) % (DKQ/2) : dim/2;
+                        const bool keep0 = distance <= atflash_windows[pair0];
+                        const bool keep1 = distance <= atflash_windows[pair1];
+                        if (keep0 && keep1) {
+                            ggml_cuda_mad(KQ_acc[i_KQ_0/(np*warp_size)*cpw + jc0], K_k[i_KQ_0/(np*warp_size)][k], Q_k[jc0][k]);
+                        } else if (keep0 || keep1) {
+                            const half2 keep = make_half2(keep0 ? 1.0f : 0.0f, keep1 ? 1.0f : 0.0f);
+                            ggml_cuda_mad(KQ_acc[i_KQ_0/(np*warp_size)*cpw + jc0], K_k[i_KQ_0/(np*warp_size)][k], Q_k[jc0][k]*keep);
+                        }
 #else
-                    const int dim = k_KQ_0 + k_KQ_1 + k;
-                    const int pair = atflash_layout == 2 ? dim % (DKQ/2) : dim/2;
-                    if (!atflash_windows || distance <= atflash_windows[pair]) {
-                        ggml_cuda_mad(KQ_acc[i_KQ_0/(np*warp_size)*cpw + jc0], K_k[i_KQ_0/(np*warp_size)][k], Q_k[jc0][k]);
-                    }
+                        const int dim = k_KQ_0 + k_KQ_1 + k;
+                        const int pair = atflash_layout == 2 ? dim % (DKQ/2) : dim/2;
+                        if (distance <= atflash_windows[pair]) {
+                            ggml_cuda_mad(KQ_acc[i_KQ_0/(np*warp_size)*cpw + jc0], K_k[i_KQ_0/(np*warp_size)][k], Q_k[jc0][k]);
+                        }
 #endif // FAST_FP16_AVAILABLE
+                    }
                 }
             }
         }
