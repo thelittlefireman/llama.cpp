@@ -9148,17 +9148,18 @@ struct test_flash_attn_atflash : public test_flash_attn_ext {
     void initialize_tensors(ggml_context * ctx) override {
         test_flash_attn_ext::initialize_tensors(ctx);
         for (ggml_tensor * t = ggml_get_first_tensor(ctx); t != nullptr; t = ggml_get_next_tensor(ctx, t)) {
-            if (strcmp(t->name, "atflash_q_pos") == 0) {
-                int32_t * data = (int32_t *) t->data;
-                for (int64_t i = 0; i < nb; ++i) data[i] = int32_t(kv + i);
-            } else if (strcmp(t->name, "atflash_k_pos") == 0) {
-                int32_t * data = (int32_t *) t->data;
-                for (int64_t i = 0; i < kv; ++i) data[i] = int32_t((i*37) % kv);
-            } else if (strcmp(t->name, "atflash_windows") == 0) {
-                int32_t * data = (int32_t *) t->data;
-                for (int64_t l = 0; l < hsk/2; ++l) {
-                    data[l] = int32_t(2.0*3.14159265358979323846*periods*std::pow(10000.0, 2.0*l/hsk));
+            if (strcmp(t->name, "atflash_q_pos") == 0 || strcmp(t->name, "atflash_k_pos") == 0 || strcmp(t->name, "atflash_windows") == 0) {
+                std::vector<int32_t> data(ggml_nelements(t));
+                if (strcmp(t->name, "atflash_q_pos") == 0) {
+                    for (int64_t i = 0; i < nb; ++i) data[i] = int32_t(kv + i);
+                } else if (strcmp(t->name, "atflash_k_pos") == 0) {
+                    for (int64_t i = 0; i < kv; ++i) data[i] = int32_t((i*37) % kv);
+                } else {
+                    for (int64_t l = 0; l < hsk/2; ++l) {
+                        data[l] = int32_t(2.0*3.14159265358979323846*periods*std::pow(10000.0, 2.0*l/hsk));
+                    }
                 }
+                ggml_backend_tensor_set(t, data.data(), 0, data.size()*sizeof(int32_t));
             }
         }
     }
