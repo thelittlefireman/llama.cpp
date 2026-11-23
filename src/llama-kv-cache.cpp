@@ -1986,6 +1986,29 @@ void llama_kv_cache::set_input_attn_mask(const llm_attn_mask & attn_mask, const 
             set_input_attn_mask_impl<float>(args, (float *) dst->data, causal_attn);
         }
 
+        if (attn_mask.atflash_windows) {
+            GGML_ASSERT(n_stream == 1 && !rows);
+            GGML_ASSERT(attn_mask.atflash_q_pos->ne[0] == n_tokens && attn_mask.atflash_k_pos->ne[0] == n_kv);
+            GGML_ASSERT(ggml_backend_buffer_is_host(attn_mask.atflash_q_pos->buffer));
+            GGML_ASSERT(ggml_backend_buffer_is_host(attn_mask.atflash_k_pos->buffer));
+            GGML_ASSERT(ggml_backend_buffer_is_host(attn_mask.atflash_windows->buffer));
+            int32_t * q_pos   = (int32_t *) attn_mask.atflash_q_pos->data;
+            int32_t * k_pos   = (int32_t *) attn_mask.atflash_k_pos->data;
+            int32_t * windows = (int32_t *) attn_mask.atflash_windows->data;
+            const auto & cells = v_cells.at(seq_to_stream.at(ubatch->seq_id[0][0]));
+            for (uint32_t i = 0; i < n_tokens; ++i) {
+                q_pos[i] = ubatch->pos[i];
+            }
+            for (int64_t i = 0; i < n_kv; ++i) {
+                k_pos[i] = cells.is_empty(i) ? -1 : cells.pos_get(i);
+            }
+            const int n_rot = int(attn_mask.atflash_windows->ne[0]*2);
+            for (int l = 0; l < n_rot/2; ++l) {
+                const double length = (2.0*3.14159265358979323846*attn_mask.atflash_periods)*std::pow(double(attn_mask.atflash_rope_base), 2.0*l/n_rot);
+                windows[l] = length >= double(INT32_MAX) ? INT32_MAX : int32_t(length);
+            }
+        }
+
         //const int64_t t_end = ggml_time_us();
 
         //LLAMA_LOG_ERROR("%s: kq mask time: %0.3f ms\n", __func__, (t_end - t_start)/1000.0);
