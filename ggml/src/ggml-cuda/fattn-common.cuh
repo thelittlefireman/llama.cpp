@@ -1308,6 +1308,9 @@ void launch_fattn(
     const float m0 = powf(2.0f, -(max_bias       ) / n_head_log2);
     const float m1 = powf(2.0f, -(max_bias / 2.0f) / n_head_log2);
 
+    int32_t atflash_layout = 0;
+    memcpy(&atflash_layout, (const int32_t *) KQV->op_params + 5, sizeof(atflash_layout));
+
     // TODO other tensor dimensions after removal of WMMA kernel:
     const uint3 ne01 = init_fastdiv_values(Q->ne[1]);
 
@@ -1326,7 +1329,7 @@ void launch_fattn(
         dst->src[7] ? (const int *) dst->src[7]->data : nullptr,
         dst->src[8] ? (const int *) dst->src[8]->data : nullptr,
         !stream_k && parallel_blocks > 1 ? dst_tmp.ptr : (float *) KQV->data, dst_tmp_meta.ptr,
-        scale, max_bias, m0, m1, n_head_log2, logit_softcap, ggml_get_op_params_i32(KQV, 5),
+        scale, max_bias, m0, m1, n_head_log2, logit_softcap, atflash_layout,
         Q->ne[0], ne01,     Q->ne[2], Q->ne[3], Q->nb[1], Q->nb[2], Q->nb[3],
         K->ne[0], n_kv, K->ne[2], K->ne[3], nb11, nb12, nb13,
         nb21, nb22, nb23,
