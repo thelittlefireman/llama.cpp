@@ -8960,11 +8960,12 @@ static void ggml_compute_forward_flash_attn_ext_f16_one_chunk(
                     continue;
                 }
                 const ggml_fp16_t * kh = (const ggml_fp16_t *) k_data;
+                const float * qf = (const float *) Q_q; // vec_dot_type of F16 K is F32
                 s = 0.0f;
                 for (int d = 0; d < DK; ++d) {
                     const int pair = atflash_layout == 2 ? d % (DK/2) : d/2;
                     if (distance <= atflash_windows[pair]) {
-                        s += GGML_CPU_FP16_TO_FP32(Q_q[d])*GGML_CPU_FP16_TO_FP32(kh[d]);
+                        s += qf[d]*GGML_CPU_FP16_TO_FP32(kh[d]);
                     }
                 }
             } else {
