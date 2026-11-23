@@ -1916,6 +1916,9 @@ static __global__ void flash_attn_ext_f16(
         const char * sinks_ptr,
         const int  * KV_max_ptr,
         const int  * KV_rows_ptr,
+        const int  * atflash_q_pos,
+        const int  * atflash_k_pos,
+        const int  * atflash_windows,
         float      * dst_ptr,
         float2     * dst_meta_ptr,
         const float scale,
@@ -1931,6 +1934,7 @@ static __global__ void flash_attn_ext_f16(
                             const int32_t nb21, const int32_t nb22, const int64_t nb23,
                             const int32_t ne31, const int32_t ne32, const int32_t ne33,
                             const int32_t nb31, const int32_t nb32, const int64_t nb33) {
+    GGML_UNUSED_VARS(atflash_q_pos, atflash_k_pos, atflash_windows);
     ggml_cuda_pdl_sync(); // TODO optimize placement
 #if defined(FLASH_ATTN_AVAILABLE) && (defined(VOLTA_MMA_AVAILABLE) || defined(TURING_MMA_AVAILABLE) || defined(AMD_WMMA_AVAILABLE) || defined(AMD_MFMA_AVAILABLE))
     const char * GGML_CUDA_RESTRICT Q              = Q_ptr;
