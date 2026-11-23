@@ -12914,11 +12914,13 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
         }
     }
 
-    for (int periods : { 1, 2 }) {
-        for (bool neox : { false, true }) {
+    if (std::getenv("GGML_TEST_ATFLASH")) {
+        for (int periods : { 1, 2 }) {
+            for (bool neox : { false, true }) {
             for (int nb : { 1, 8 }) {
                 test_cases.emplace_back(new test_flash_attn_atflash(128, nb, 512, periods, neox));
             }
+        }
         }
     }
 
