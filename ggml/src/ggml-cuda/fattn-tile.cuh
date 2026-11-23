@@ -656,7 +656,10 @@ static __device__ __forceinline__ void flash_attn_tile_iter(
     if (atflash_windows) {
         constexpr int nbatch_K_atflash = 32;
         constexpr int nbatch_K_last = DKQ % nbatch_K_atflash;
-        __shared__ int atflash_pos_limits[4]; // K minimum/maximum and Q minimum/maximum.
+        __shared__ int atflash_k_pos_min;
+        __shared__ int atflash_k_pos_max;
+        __shared__ int atflash_q_pos_min;
+        __shared__ int atflash_q_pos_max;
 
         if (threadIdx.y == 0) {
             int k_pos_min = INT_MAX;
@@ -674,8 +677,8 @@ static __device__ __forceinline__ void flash_attn_tile_iter(
                 k_pos_max = max(k_pos_max, __shfl_xor_sync(0xffffffff, k_pos_max, offset, warp_size));
             }
             if (threadIdx.x == 0) {
-                atflash_pos_limits[0] = k_pos_min;
-                atflash_pos_limits[1] = k_pos_max;
+                atflash_k_pos_min = k_pos_min;
+                atflash_k_pos_max = k_pos_max;
                 int q_pos_min = INT_MAX;
                 int q_pos_max = INT_MIN;
                 for (int j = col_Q_0; j < col_Q_0 + ncols1 && j < int(ne01.z); ++j) {
@@ -683,14 +686,14 @@ static __device__ __forceinline__ void flash_attn_tile_iter(
                     q_pos_min = min(q_pos_min, pos);
                     q_pos_max = max(q_pos_max, pos);
                 }
-                atflash_pos_limits[2] = q_pos_min;
-                atflash_pos_limits[3] = q_pos_max;
+                atflash_q_pos_min = q_pos_min;
+                atflash_q_pos_max = q_pos_max;
             }
         }
         __syncthreads();
 
-        const int64_t distance_min = int64_t(atflash_pos_limits[2]) - atflash_pos_limits[1];
-        const int64_t distance_max = int64_t(atflash_pos_limits[3]) - atflash_pos_limits[0];
+        const int64_t distance_min = int64_t(atflash_q_pos_min) - atflash_k_pos_max;
+        const int64_t distance_max = int64_t(atflash_q_pos_max) - atflash_k_pos_min;
 
         for (int k_KQ_0 = 0; k_KQ_0 < DKQ - nbatch_K_last; k_KQ_0 += nbatch_K_atflash) {
             int pair_min = atflash_layout == 2 ?  k_KQ_0                             % (DKQ/2) :  k_KQ_0                            /2;
