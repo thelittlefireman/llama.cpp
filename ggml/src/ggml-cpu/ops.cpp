@@ -8954,7 +8954,8 @@ static void ggml_compute_forward_flash_attn_ext_f16_one_chunk(
             const char * k_data = (const char *) k->data + (ik1*nbk1 + ik2*nbk2 + ik3*nbk3);
             if (atflash_windows) {
                 GGML_ASSERT(k->type == GGML_TYPE_F16 && atflash_q_pos && atflash_k_pos && (atflash_layout == 1 || atflash_layout == 2));
-                const int32_t distance = atflash_q_pos[iq3*neq1 + iq1] - atflash_k_pos[ik3*nek1 + ik1];
+                const int32_t key_pos = atflash_k_pos[ik3*nek1 + ik1];
+                const int32_t distance = key_pos < 0 ? 0 : atflash_q_pos[iq3*neq1 + iq1] - key_pos;
                 if (distance > atflash_windows[DK/2 - 1]) {
                     continue;
                 }
