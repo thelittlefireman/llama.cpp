@@ -5682,6 +5682,26 @@ void ggml_flash_attn_ext_set_n_kv_max(
     ggml_set_op_params_i32(a, 4, n_kv_max);
 }
 
+void ggml_flash_attn_ext_set_atflash(
+        struct ggml_tensor * a,
+        struct ggml_tensor * q_pos,
+        struct ggml_tensor * k_pos,
+        struct ggml_tensor * windows,
+        bool                 neox) {
+    GGML_ASSERT(a->op == GGML_OP_FLASH_ATTN_EXT);
+    GGML_ASSERT(a->src[5] == NULL);
+    GGML_ASSERT(q_pos && k_pos && windows);
+    GGML_ASSERT(q_pos->type == GGML_TYPE_I32 && k_pos->type == GGML_TYPE_I32 && windows->type == GGML_TYPE_I32);
+    GGML_ASSERT(ggml_is_contiguous(q_pos) && ggml_is_contiguous(k_pos) && ggml_is_contiguous(windows));
+    GGML_ASSERT(q_pos->ne[0] == a->src[0]->ne[1] && k_pos->ne[0] == a->src[1]->ne[1]);
+    GGML_ASSERT(q_pos->ne[1] == a->src[0]->ne[3] && k_pos->ne[1] == a->src[1]->ne[3]);
+    GGML_ASSERT(windows->ne[0] == a->src[0]->ne[0]/2);
+    a->src[6] = q_pos;
+    a->src[7] = k_pos;
+    a->src[8] = windows;
+    ggml_set_op_params_i32(a, 5, neox ? 2 : 1);
+}
+
 void ggml_flash_attn_ext_add_sinks(
         struct ggml_tensor * a,
         struct ggml_tensor * sinks) {
