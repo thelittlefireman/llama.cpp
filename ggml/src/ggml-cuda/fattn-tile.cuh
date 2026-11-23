@@ -555,7 +555,8 @@ static __device__ __forceinline__ void flash_attn_tile_iter_KQ(
                     const int key = k_VKQ_0 + i_KQ_0 + (threadIdx.y % np)*warp_size + threadIdx.x;
                     int distance = 0;
                     if (atflash_windows && query < n_q && key < n_kv) {
-                        distance = atflash_q_pos[sequence*n_q + query] - atflash_k_pos[sequence*n_kv + key];
+                        const int key_pos = atflash_k_pos[sequence*n_kv + key];
+                        distance = key_pos < 0 ? 0 : atflash_q_pos[sequence*n_q + query] - key_pos;
                     }
 #ifdef FAST_FP16_AVAILABLE
                     const int dim = k_KQ_0 + 2*(k_KQ_1 + k);
@@ -674,6 +675,7 @@ static __device__ __forceinline__ void flash_attn_tile_iter(
             }
 
             if (atflash_windows && j < int(ne01.z) && k_VKQ_0 + i_KQ < n_kv &&
+                    atflash_k_pos[sequence*n_kv + k_VKQ_0 + i_KQ] >= 0 &&
                     atflash_q_pos[sequence*int(ne01.z) + j] - atflash_k_pos[sequence*n_kv + k_VKQ_0 + i_KQ] > atflash_windows[DKQ/2 - 1]) {
                 KQ_acc[(i_KQ_0/(np*warp_size))*cpw + jc0] = -INFINITY;
             }
