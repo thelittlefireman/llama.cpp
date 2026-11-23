@@ -9124,13 +9124,14 @@ struct test_flash_attn_ext : public test_case {
 struct test_flash_attn_atflash : public test_flash_attn_ext {
     const int periods;
     const bool neox;
+    const bool far;
 
-    test_flash_attn_atflash(int64_t head_size, int64_t n_queries, int64_t n_kv, int periods, bool neox)
+    test_flash_attn_atflash(int64_t head_size, int64_t n_queries, int64_t n_kv, int periods, bool neox, bool far = false)
         : test_flash_attn_ext(head_size, head_size, 4, {2, 1}, n_kv, n_queries, true, false, 0, 0, GGML_PREC_F32, GGML_TYPE_F16, GGML_TYPE_F16),
-          periods(periods), neox(neox) {}
+          periods(periods), neox(neox), far(far) {}
 
     std::string vars() override {
-        return test_flash_attn_ext::vars() + ",atflash_periods=" + std::to_string(periods) + ",neox=" + std::to_string(neox);
+        return test_flash_attn_ext::vars() + ",atflash_periods=" + std::to_string(periods) + ",neox=" + std::to_string(neox) + ",far=" + std::to_string(far);
     }
 
     ggml_tensor * build_graph(ggml_context * ctx) override {
@@ -9151,7 +9152,7 @@ struct test_flash_attn_atflash : public test_flash_attn_ext {
             if (strcmp(t->name, "atflash_q_pos") == 0 || strcmp(t->name, "atflash_k_pos") == 0 || strcmp(t->name, "atflash_windows") == 0) {
                 std::vector<int32_t> data(ggml_nelements(t));
                 if (strcmp(t->name, "atflash_q_pos") == 0) {
-                    for (int64_t i = 0; i < nb; ++i) data[i] = int32_t(kv + i);
+                    for (int64_t i = 0; i < nb; ++i) data[i] = int32_t((far ? 500000 : kv) + i);
                 } else if (strcmp(t->name, "atflash_k_pos") == 0) {
                     for (int64_t i = 0; i < kv; ++i) data[i] = int32_t((i*37) % kv);
                 } else {
@@ -12924,6 +12925,7 @@ static std::vector<std::unique_ptr<test_case>> make_test_cases_eval() {
                 }
             }
         }
+        test_cases.emplace_back(new test_flash_attn_atflash(128, 1, 512, 1, true, true));
     }
 
     // prefill-shaped cases with long KV (nb >= 32, kv >= 1024): covers the
