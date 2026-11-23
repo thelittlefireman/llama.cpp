@@ -24,6 +24,7 @@
 #include <atomic>
 #include <array>
 #include <cfloat>
+#include <cmath>
 #include <cinttypes>
 #include <cstdarg>
 #include <cstdint>
