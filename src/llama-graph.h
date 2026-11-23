@@ -336,9 +336,9 @@ public:
 struct llm_attn_mask {
     ggml_tensor * raw  = nullptr;
     ggml_tensor * rows = nullptr; // I32 [n_kv_rows, n_slices]
-    ggml_tensor * atflash_q_pos  = nullptr;
-    ggml_tensor * atflash_k_pos  = nullptr;
-    ggml_tensor * atflash_windows = nullptr;
+    ggml_tensor * atflash_q_pos    = nullptr;
+    ggml_tensor * atflash_k_pos    = nullptr;
+    ggml_tensor * atflash_windows  = nullptr;
     float         atflash_rope_base = 0.0f;
     int32_t       atflash_periods   = 0;
     uint32_t      n_kv = 0;
