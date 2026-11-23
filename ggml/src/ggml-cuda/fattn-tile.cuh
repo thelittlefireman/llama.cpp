@@ -650,17 +650,86 @@ static __device__ __forceinline__ void flash_attn_tile_iter(
 
     float KQ_acc[nbatch_fa/(np*warp_size) * cpw] = {0.0f}; // Accumulators for KQ matrix multiplication.
 
-    // KQ = K @ Q matrix multiplication:
-    constexpr int nbatch_K_last = DKQ % nbatch_K;
+    if (atflash_windows) {
+        constexpr int nbatch_K_atflash = 32;
+        constexpr int nbatch_K_last = DKQ % nbatch_K_atflash;
+        __shared__ int atflash_pos_limits[4]; // K minimum/maximum and Q minimum/maximum.
+
+        if (threadIdx.y == 0) {
+            int k_pos_min = INT_MAX;
+            int k_pos_max = INT_MIN;
+            for (int i = threadIdx.x; i < nbatch_fa && i < k_VKQ_sup && k_VKQ_0 + i < n_kv; i += warp_size) {
+                const int pos = atflash_k_pos[sequence*n_kv + k_VKQ_0 + i];
+                if (pos >= 0) {
+                    k_pos_min = min(k_pos_min, pos);
+                    k_pos_max = max(k_pos_max, pos);
+                }
+            }
 #pragma unroll
-    for (int k_KQ_0 = 0; k_KQ_0 < DKQ - nbatch_K_last; k_KQ_0 += nbatch_K) {
-        flash_attn_tile_iter_KQ<warp_size, nwarps, ncols1, ncols2, DKQ, nbatch_fa, nbatch_K, use_logit_softcap, oob_check>(
-            Q_tmp, K_h2, KV_tmp, stride_K2, k_VKQ_0, k_VKQ_sup, k_KQ_0, KQ_acc, atflash_q_pos, atflash_k_pos, atflash_windows, atflash_layout, sequence, col_Q_0, ne01.z, n_kv);
-    }
-    if (nbatch_K_last > 0) {
-        constexpr int k_KQ_0 = DKQ - nbatch_K_last;
-        flash_attn_tile_iter_KQ<warp_size, nwarps, ncols1, ncols2, DKQ, nbatch_fa, nbatch_K_last, use_logit_softcap, oob_check>(
-            Q_tmp, K_h2, KV_tmp, stride_K2, k_VKQ_0, k_VKQ_sup, k_KQ_0, KQ_acc, atflash_q_pos, atflash_k_pos, atflash_windows, atflash_layout, sequence, col_Q_0, ne01.z, n_kv);
+            for (int offset = warp_size/2; offset > 0; offset >>= 1) {
+                k_pos_min = min(k_pos_min, __shfl_xor_sync(0xffffffff, k_pos_min, offset, warp_size));
+                k_pos_max = max(k_pos_max, __shfl_xor_sync(0xffffffff, k_pos_max, offset, warp_size));
+            }
+            if (threadIdx.x == 0) {
+                atflash_pos_limits[0] = k_pos_min;
+                atflash_pos_limits[1] = k_pos_max;
+                int q_pos_min = INT_MAX;
+                int q_pos_max = INT_MIN;
+                for (int j = col_Q_0; j < col_Q_0 + ncols1 && j < int(ne01.z); ++j) {
+                    const int pos = atflash_q_pos[sequence*int(ne01.z) + j];
+                    q_pos_min = min(q_pos_min, pos);
+                    q_pos_max = max(q_pos_max, pos);
+                }
+                atflash_pos_limits[2] = q_pos_min;
+                atflash_pos_limits[3] = q_pos_max;
+            }
+        }
+        __syncthreads();
+
+        const int64_t distance_min = int64_t(atflash_pos_limits[2]) - atflash_pos_limits[1];
+        const int64_t distance_max = int64_t(atflash_pos_limits[3]) - atflash_pos_limits[0];
+
+        for (int k_KQ_0 = 0; k_KQ_0 < DKQ - nbatch_K_last; k_KQ_0 += nbatch_K_atflash) {
+            int pair_min = atflash_layout == 2 ?  k_KQ_0                             % (DKQ/2) :  k_KQ_0                            /2;
+            int pair_max = atflash_layout == 2 ? (k_KQ_0 + nbatch_K_atflash - 1) % (DKQ/2) : (k_KQ_0 + nbatch_K_atflash - 1)/2;
+            if (atflash_layout == 2 && k_KQ_0/(DKQ/2) != (k_KQ_0 + nbatch_K_atflash - 1)/(DKQ/2)) {
+                pair_min = 0;
+                pair_max = DKQ/2 - 1;
+            }
+            if (distance_min > atflash_windows[pair_max]) {
+                continue;
+            }
+            const int * windows = distance_max <= atflash_windows[pair_min] ? nullptr : atflash_windows;
+            flash_attn_tile_iter_KQ<warp_size, nwarps, ncols1, ncols2, DKQ, nbatch_fa, nbatch_K_atflash, use_logit_softcap, oob_check>(
+                Q_tmp, K_h2, KV_tmp, stride_K2, k_VKQ_0, k_VKQ_sup, k_KQ_0, KQ_acc, atflash_q_pos, atflash_k_pos, windows, atflash_layout, sequence, col_Q_0, ne01.z, n_kv);
+        }
+        if (nbatch_K_last > 0) {
+            constexpr int k_KQ_0 = DKQ - nbatch_K_last;
+            int pair_min = atflash_layout == 2 ?  k_KQ_0                       % (DKQ/2) :  k_KQ_0                      /2;
+            int pair_max = atflash_layout == 2 ? (k_KQ_0 + nbatch_K_last - 1) % (DKQ/2) : (k_KQ_0 + nbatch_K_last - 1)/2;
+            if (atflash_layout == 2 && k_KQ_0/(DKQ/2) != (k_KQ_0 + nbatch_K_last - 1)/(DKQ/2)) {
+                pair_min = 0;
+                pair_max = DKQ/2 - 1;
+            }
+            if (distance_min <= atflash_windows[pair_max]) {
+                const int * windows = distance_max <= atflash_windows[pair_min] ? nullptr : atflash_windows;
+                flash_attn_tile_iter_KQ<warp_size, nwarps, ncols1, ncols2, DKQ, nbatch_fa, nbatch_K_last, use_logit_softcap, oob_check>(
+                    Q_tmp, K_h2, KV_tmp, stride_K2, k_VKQ_0, k_VKQ_sup, k_KQ_0, KQ_acc, atflash_q_pos, atflash_k_pos, windows, atflash_layout, sequence, col_Q_0, ne01.z, n_kv);
+            }
+        }
+    } else {
+        constexpr int nbatch_K_last = DKQ % nbatch_K;
+    #pragma unroll
+        for (int k_KQ_0 = 0; k_KQ_0 < DKQ - nbatch_K_last; k_KQ_0 += nbatch_K) {
+            flash_attn_tile_iter_KQ<warp_size, nwarps, ncols1, ncols2, DKQ, nbatch_fa, nbatch_K, use_logit_softcap, oob_check>(
+                Q_tmp, K_h2, KV_tmp, stride_K2, k_VKQ_0, k_VKQ_sup, k_KQ_0, KQ_acc, atflash_q_pos, atflash_k_pos, atflash_windows, atflash_layout, sequence, col_Q_0, ne01.z, n_kv);
+        }
+        if (nbatch_K_last > 0) {
+            constexpr int k_KQ_0 = DKQ - nbatch_K_last;
+            flash_attn_tile_iter_KQ<warp_size, nwarps, ncols1, ncols2, DKQ, nbatch_fa, nbatch_K_last, use_logit_softcap, oob_check>(
+                Q_tmp, K_h2, KV_tmp, stride_K2, k_VKQ_0, k_VKQ_sup, k_KQ_0, KQ_acc, atflash_q_pos, atflash_k_pos, atflash_windows, atflash_layout, sequence, col_Q_0, ne01.z, n_kv);
+        }
+    
     }
 
     // Apply logit softcap + mask, update KQ_max:
