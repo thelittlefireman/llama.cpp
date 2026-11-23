@@ -22,12 +22,26 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <cstdlib>
 #include <numeric>
 #include <sstream>
 #include <string>
 #include <unordered_set>
 
 // dedup helpers
+
+static int llama_atflash_periods() {
+    const char * value = std::getenv("LLAMA_ATFLASH_PERIODS");
+    if (!value || !*value) {
+        return 0;
+    }
+    char * end = nullptr;
+    const long periods = std::strtol(value, &end, 10);
+    if (*end != '\0' || periods < 1 || periods > 64) {
+        throw std::runtime_error("LLAMA_ATFLASH_PERIODS must be an integer between 1 and 64");
+    }
+    return int(periods);
+}
 
 static ggml_tensor * build_attn_inp_kq_mask(
         ggml_context * ctx,
@@ -104,7 +118,8 @@ static llm_attn_mask build_attn_inp_attn_mask(
         ggml_context * ctx,
         const llama_kv_cache_context * mctx,
         const llama_ubatch & ubatch,
-        const llama_cparams & cparams) {
+        const llama_cparams & cparams,
+        const llama_hparams & hparams) {
     llm_attn_mask attn_mask;
 
     attn_mask.n_kv = mctx->get_n_kv();
@@ -124,6 +139,22 @@ static llm_attn_mask build_attn_inp_attn_mask(
         attn_mask.raw = ggml_new_tensor_4d(ctx, GGML_TYPE_F16, n_kv_rows, ubatch.n_tokens/n_slices, 1, n_slices);
         ggml_set_input(attn_mask.raw);
         ggml_set_name(attn_mask.raw, "attn_inp_kq_mask");
+    }
+
+    const int periods = llama_atflash_periods();
+    if (periods > 0 && n_kv_rows == 0 && cparams.flash_attn && !cparams.training && ubatch.n_seqs_unq == 1 &&
+            (hparams.rope_type == LLAMA_ROPE_TYPE_NORM || hparams.rope_type == LLAMA_ROPE_TYPE_NEOX) &&
+            hparams.rope_scaling_type_train == LLAMA_ROPE_SCALING_TYPE_NONE && cparams.rope_freq_scale == 1.0f &&
+            hparams.n_rot() == hparams.n_embd_head_k() && hparams.n_rot() >= 2 && hparams.n_rot() <= 256 &&
+            hparams.n_rot() % 2 == 0 && std::isfinite(cparams.rope_freq_base) && cparams.rope_freq_base > 1.0f) {
+        attn_mask.atflash_q_pos   = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, ubatch.n_tokens);
+        attn_mask.atflash_k_pos   = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, attn_mask.n_kv);
+        attn_mask.atflash_windows = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, hparams.n_rot()/2);
+        for (ggml_tensor * t : {attn_mask.atflash_q_pos, attn_mask.atflash_k_pos, attn_mask.atflash_windows}) {
+            ggml_set_input(t);
+        }
+        attn_mask.atflash_rope_base = cparams.rope_freq_base;
+        attn_mask.atflash_periods   = periods;
     }
 
     return attn_mask;
@@ -3066,7 +3097,8 @@ ggml_tensor * llm_graph_context::build_attn_mha(
          ggml_tensor * v_mla,
              int64_t   n_kv_max,
                float   kq_scale,
-                 int   il) const {
+                 int   il,
+        const llm_attn_mask * atflash_mask) const {
     const bool v_trans = v->nb[1] > v->nb[2];
 
     // split the batch into streams if needed
@@ -3107,6 +3139,12 @@ ggml_tensor * llm_graph_context::build_attn_mha(
         } else {
             cur = ggml_flash_attn_ext(ctx0, q, k, v, kq_mask, kq_scale, hparams.f_max_alibi_bias,
                                       hparams.attn_soft_cap ? hparams.f_attn_logit_softcapping : 0.0f);
+        }
+        if (atflash_mask && atflash_mask->atflash_windows) {
+            GGML_ASSERT(k->type == GGML_TYPE_F16 && v->type == GGML_TYPE_F16 && !kv_rows);
+            GGML_ASSERT(q->ne[0] == hparams.n_rot(il));
+            ggml_flash_attn_ext_set_atflash(cur, atflash_mask->atflash_q_pos, atflash_mask->atflash_k_pos,
+                                            atflash_mask->atflash_windows, hparams.rope_type == LLAMA_ROPE_TYPE_NEOX);
         }
         res->add_fused_node({kv_rows ? LLM_FUSED_OP_FLASH_ATTN_KV_ROWS : LLM_FUSED_OP_FLASH_ATTN, cur, il});
 
@@ -3302,7 +3340,7 @@ static std::unique_ptr<llm_graph_input_attn_kv> build_attn_inp_kv_impl(
         inp->self_k_idxs = mctx_cur->build_input_k_idxs(ctx0, ubatch);
         inp->self_v_idxs = mctx_cur->build_input_v_idxs(ctx0, ubatch);
 
-        inp->self_attn_mask = build_attn_inp_attn_mask(ctx0, mctx_cur, ubatch, cparams);
+        inp->self_attn_mask = build_attn_inp_attn_mask(ctx0, mctx_cur, ubatch, cparams, hparams);
     }
 
     inp->self_k_rot = mctx_cur->get_k_rot();
@@ -3418,7 +3456,7 @@ ggml_tensor * llm_graph_context::build_attn(
     const auto & kq_mask = inp->self_attn_mask.raw;
     const auto & kv_rows = inp->self_attn_mask.rows;
 
-    ggml_tensor * cur = build_attn_mha(q, k, v, kq_b, kq_mask, kv_rows, sinks, v_mla, 0, kq_scale, il);
+    ggml_tensor * cur = build_attn_mha(q, k, v, kq_b, kq_mask, kv_rows, sinks, v_mla, 0, kq_scale, il, &inp->self_attn_mask);
     cur = build_attn_scale_kv_output(ctx0, mctx_cur, cur, il);
     cb(cur, "kqv_out", il);
 
@@ -3967,7 +4005,7 @@ llm_graph_input_attn_kv_iswa * llm_graph_context::build_attn_inp_kv_iswa() const
         inp->self_k_idxs = mctx_cur->get_base()->build_input_k_idxs(ctx0, ubatch);
         inp->self_v_idxs = mctx_cur->get_base()->build_input_v_idxs(ctx0, ubatch);
 
-        inp->self_attn_mask = build_attn_inp_attn_mask(ctx0, mctx_cur->get_base(), ubatch, cparams);
+        inp->self_attn_mask = build_attn_inp_attn_mask(ctx0, mctx_cur->get_base(), ubatch, cparams, hparams);
     }
 
     {
@@ -3976,7 +4014,7 @@ llm_graph_input_attn_kv_iswa * llm_graph_context::build_attn_inp_kv_iswa() const
         inp->self_k_idxs_swa = mctx_cur->get_swa()->build_input_k_idxs(ctx0, ubatch);
         inp->self_v_idxs_swa = mctx_cur->get_swa()->build_input_v_idxs(ctx0, ubatch);
 
-        inp->self_attn_mask_swa = build_attn_inp_attn_mask(ctx0, mctx_cur->get_swa(), ubatch, cparams);
+        inp->self_attn_mask_swa = build_attn_inp_attn_mask(ctx0, mctx_cur->get_swa(), ubatch, cparams, hparams);
     }
 
     inp->self_k_rot = mctx_cur->get_base()->get_k_rot();
