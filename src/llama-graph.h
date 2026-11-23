@@ -336,6 +336,11 @@ public:
 struct llm_attn_mask {
     ggml_tensor * raw  = nullptr;
     ggml_tensor * rows = nullptr; // I32 [n_kv_rows, n_slices]
+    ggml_tensor * atflash_q_pos  = nullptr;
+    ggml_tensor * atflash_k_pos  = nullptr;
+    ggml_tensor * atflash_windows = nullptr;
+    float         atflash_rope_base = 0.0f;
+    int32_t       atflash_periods   = 0;
     uint32_t      n_kv = 0;
 
     // fill every token of a sequence with the mask row of its first token (dspark draft blocks)
@@ -1302,7 +1307,8 @@ struct llm_graph_context {
             ggml_tensor * v_mla,   // [n_embd_head_v_mla, n_embd_head_v, n_head_v]
                 int64_t   n_kv_max,
                   float   kq_scale,
-                    int   il) const;
+                    int   il,
+            const llm_attn_mask * atflash_mask = nullptr) const;
 
     llm_graph_input_attn_no_cache * build_attn_inp_no_cache() const;
 
