@@ -143,7 +143,7 @@ static llm_attn_mask build_attn_inp_attn_mask(
 
     const int periods = llama_atflash_periods();
     if (periods > 0) {
-        if (n_kv_rows != 0 || !cparams.flash_attn || cparams.training || ubatch.n_seqs_unq != 1 ||
+        if (n_kv_rows != 0 || !cparams.flash_attn || cparams.training || ubatch.n_seqs_unq != 1 || hparams.swa_type != LLAMA_SWA_TYPE_NONE ||
                 (hparams.rope_type != LLAMA_ROPE_TYPE_NORM && hparams.rope_type != LLAMA_ROPE_TYPE_NEOX) ||
                 hparams.rope_scaling_type_train != LLAMA_ROPE_SCALING_TYPE_NONE || cparams.rope_freq_scale != 1.0f ||
                 hparams.n_rot() != hparams.n_embd_head_k() || hparams.n_rot() < 2 || hparams.n_rot() > 256 ||
@@ -153,6 +153,9 @@ static llm_attn_mask build_attn_inp_attn_mask(
         attn_mask.atflash_q_pos   = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, ubatch.n_tokens);
         attn_mask.atflash_k_pos   = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, attn_mask.n_kv);
         attn_mask.atflash_windows = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, hparams.n_rot()/2);
+        ggml_set_name(attn_mask.atflash_q_pos, "atflash_q_pos");
+        ggml_set_name(attn_mask.atflash_k_pos, "atflash_k_pos");
+        ggml_set_name(attn_mask.atflash_windows, "atflash_windows");
         for (ggml_tensor * t : {attn_mask.atflash_q_pos, attn_mask.atflash_k_pos, attn_mask.atflash_windows}) {
             ggml_set_input(t);
         }
