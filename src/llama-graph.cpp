@@ -142,11 +142,14 @@ static llm_attn_mask build_attn_inp_attn_mask(
     }
 
     const int periods = llama_atflash_periods();
-    if (periods > 0 && n_kv_rows == 0 && cparams.flash_attn && !cparams.training && ubatch.n_seqs_unq == 1 &&
-            (hparams.rope_type == LLAMA_ROPE_TYPE_NORM || hparams.rope_type == LLAMA_ROPE_TYPE_NEOX) &&
-            hparams.rope_scaling_type_train == LLAMA_ROPE_SCALING_TYPE_NONE && cparams.rope_freq_scale == 1.0f &&
-            hparams.n_rot() == hparams.n_embd_head_k() && hparams.n_rot() >= 2 && hparams.n_rot() <= 256 &&
-            hparams.n_rot() % 2 == 0 && std::isfinite(cparams.rope_freq_base) && cparams.rope_freq_base > 1.0f) {
+    if (periods > 0) {
+        if (n_kv_rows != 0 || !cparams.flash_attn || cparams.training || ubatch.n_seqs_unq != 1 ||
+                (hparams.rope_type != LLAMA_ROPE_TYPE_NORM && hparams.rope_type != LLAMA_ROPE_TYPE_NEOX) ||
+                hparams.rope_scaling_type_train != LLAMA_ROPE_SCALING_TYPE_NONE || cparams.rope_freq_scale != 1.0f ||
+                hparams.n_rot() != hparams.n_embd_head_k() || hparams.n_rot() < 2 || hparams.n_rot() > 256 ||
+                hparams.n_rot() % 2 != 0 || !std::isfinite(cparams.rope_freq_base) || cparams.rope_freq_base <= 1.0f) {
+            throw std::runtime_error("ATFlash only supports single-stream full-dimension standard RoPE inference with unscaled frequencies and Flash Attention");
+        }
         attn_mask.atflash_q_pos   = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, ubatch.n_tokens);
         attn_mask.atflash_k_pos   = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, attn_mask.n_kv);
         attn_mask.atflash_windows = ggml_new_tensor_1d(ctx, GGML_TYPE_I32, hparams.n_rot()/2);
