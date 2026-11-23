@@ -1,6 +1,8 @@
 #include "common.cuh"
 #include "fattn-common.cuh"
 
+#include <climits>
+
 // nbatch_fa == number of KQ rows to process per iteration
 // nbatch_K == number of K columns to load in parallel for KQ calculation
 
@@ -650,6 +652,7 @@ static __device__ __forceinline__ void flash_attn_tile_iter(
 
     float KQ_acc[nbatch_fa/(np*warp_size) * cpw] = {0.0f}; // Accumulators for KQ matrix multiplication.
 
+    // The bounds are shared by all queries and keys of this KV tile.
     if (atflash_windows) {
         constexpr int nbatch_K_atflash = 32;
         constexpr int nbatch_K_last = DKQ % nbatch_K_atflash;
@@ -719,7 +722,7 @@ static __device__ __forceinline__ void flash_attn_tile_iter(
         }
     } else {
         constexpr int nbatch_K_last = DKQ % nbatch_K;
-    #pragma unroll
+#pragma unroll
         for (int k_KQ_0 = 0; k_KQ_0 < DKQ - nbatch_K_last; k_KQ_0 += nbatch_K) {
             flash_attn_tile_iter_KQ<warp_size, nwarps, ncols1, ncols2, DKQ, nbatch_fa, nbatch_K, use_logit_softcap, oob_check>(
                 Q_tmp, K_h2, KV_tmp, stride_K2, k_VKQ_0, k_VKQ_sup, k_KQ_0, KQ_acc, atflash_q_pos, atflash_k_pos, atflash_windows, atflash_layout, sequence, col_Q_0, ne01.z, n_kv);
@@ -729,7 +732,6 @@ static __device__ __forceinline__ void flash_attn_tile_iter(
             flash_attn_tile_iter_KQ<warp_size, nwarps, ncols1, ncols2, DKQ, nbatch_fa, nbatch_K_last, use_logit_softcap, oob_check>(
                 Q_tmp, K_h2, KV_tmp, stride_K2, k_VKQ_0, k_VKQ_sup, k_KQ_0, KQ_acc, atflash_q_pos, atflash_k_pos, atflash_windows, atflash_layout, sequence, col_Q_0, ne01.z, n_kv);
         }
-    
     }
 
     // Apply logit softcap + mask, update KQ_max:
