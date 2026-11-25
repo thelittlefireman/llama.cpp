@@ -449,6 +449,47 @@ static __device__ __forceinline__ void flash_attn_tile_iter_KQ(
     }
 }
 
+template<int warp_size, int nwarps, int I, int J, bool oob_check, typename T_src, typename T_dst>
+static __device__ __forceinline__ void flash_attn_tile_load_V(
+        const T_src * const __restrict__ V, T_dst * const __restrict__ tile_V, const int stride_V, const int k_VKQ_0, const int i_sup) {
+#if defined(GGML_USE_HIP) && defined(__HIP_DEVICE_COMPILE__) && (defined(GCN5) || defined(CDNA))
+#if __has_builtin(__builtin_amdgcn_load_to_lds)
+    constexpr int warp_size_physical = ggml_cuda_get_physical_warp_size();
+    constexpr int nthreads = nwarps*warp_size;
+#ifdef CDNA4
+    constexpr int cpy_ne = 4;
+#else
+    constexpr int cpy_ne = 1;
+#endif // CDNA4
+    constexpr int cpy_nb = cpy_ne*sizeof(half2);
+    constexpr int ne = I*(J/2);
+    if constexpr (!oob_check && std::is_same_v<T_src, half2> && std::is_same_v<T_dst, half2> &&
+                  (J/2) % cpy_ne == 0 && nthreads % warp_size_physical == 0 && ne % (nthreads*cpy_ne) == 0) {
+        if (cpy_ne == 1 || (stride_V % cpy_ne == 0 && (uintptr_t(V) % cpy_nb == 0) && (uintptr_t(tile_V) % cpy_nb == 0))) {
+            using global_ptr = void __attribute__((address_space(1))) *;
+            using lds_ptr = void __attribute__((address_space(3))) *;
+            const int tid = threadIdx.y*warp_size + threadIdx.x;
+            const int lane = tid % warp_size_physical;
+
+            // LDS addresses must be uniform across the physical wave.
+#pragma unroll
+            for (int l0 = 0; l0 < ne; l0 += nthreads*cpy_ne) {
+                const int l = l0 + tid*cpy_ne;
+                const int i = l / (J/2);
+                const int j = l % (J/2);
+                __builtin_amdgcn_load_to_lds((global_ptr) (V + int64_t(k_VKQ_0 + i)*stride_V + j),
+                    (lds_ptr) (tile_V + l - lane*cpy_ne), cpy_nb, 0, 0);
+            }
+            return;
+        }
+    }
+#endif
+#endif
+    constexpr int stride_tile = std::is_same_v<T_dst, half2> ? J/2 : J;
+    flash_attn_load_tile<warp_size, nwarps, I, J, stride_tile, false, oob_check, false, false, false, T_src, T_dst>
+        (V, tile_V, J/2, stride_V, k_VKQ_0, i_sup, nullptr);
+}
+
 // Function that performs a single iteration of the main loop over up to nbatch_fa tokens.
 template <int warp_size, int nwarps, int ncols1, int ncols2, int DKQ, int DV, int nbatch_fa, int nbatch_K,
     bool use_logit_softcap, bool oob_check, typename T_vec_dot, typename T_KQ, typename T_acc, typename T_K, typename T_V>
@@ -611,37 +652,10 @@ static __device__ __forceinline__ void flash_attn_tile_iter(
     constexpr int nbatch_V = (DV % nbatch_K == 0 ? nbatch_K : nbatch_K*2/3) * nbatch_fa / DV; // Number of V columns that fit in SRAM for K.
     static_assert(nbatch_fa % nbatch_V == 0, "bad nbatch_V");
     static_assert(nbatch_V % np == 0, "bad nbatch_V");
-    constexpr int stride_tile_V = std::is_same_v<T_vec_dot, half2> ? DV/2 : DV;
 #pragma unroll
     for (int k0 = 0; k0 < nbatch_fa; k0 += nbatch_V) {
-#if defined(GCN5) && defined(__HIP_DEVICE_COMPILE__)
-#if __has_builtin(__builtin_amdgcn_raw_ptr_buffer_load_lds) && __has_builtin(__builtin_amdgcn_make_buffer_rsrc)
-        constexpr int warp_size_physical = ggml_cuda_get_physical_warp_size();
-        constexpr int nthreads = nwarps*warp_size;
-        if constexpr (!oob_check && std::is_same_v<T_V, half2> && std::is_same_v<T_vec_dot, half2> &&
-                      DV % (2*warp_size_physical) == 0 && nthreads % warp_size_physical == 0 && nbatch_V*warp_size_physical % nthreads == 0) {
-            using lds_ptr = void __attribute__((address_space(3))) *;
-            constexpr int nwarps_physical = nthreads / warp_size_physical;
-            const int tid = threadIdx.y*warp_size + threadIdx.x;
-
-            // The LDS destination is uniform across the physical wave, not the logical warp.
-#pragma unroll
-            for (int i0 = 0; i0 < nbatch_V; i0 += nwarps_physical) {
-                const int i = i0 + tid/warp_size_physical;
-                const auto rsrc = __builtin_amdgcn_make_buffer_rsrc((void *) (V_h2 + int64_t(k_VKQ_0 + k0 + i)*stride_V2), 0, DV*sizeof(half), 0x00020000);
-#pragma unroll
-                for (int j0 = 0; j0 < DV/2; j0 += warp_size_physical) {
-                    __builtin_amdgcn_raw_ptr_buffer_load_lds(rsrc, (lds_ptr) (KV_tmp + i*stride_tile_V + j0),
-                        sizeof(half2), (j0 + tid % warp_size_physical)*sizeof(half2), 0, 0, 0);
-                }
-            }
-        } else
-#endif
-#endif
-        {
-            flash_attn_load_tile<warp_size, nwarps, nbatch_V, DV, stride_tile_V, false, oob_check, false, false, false, T_V, T_vec_dot>
-                (V_h2, KV_tmp, DV/2, stride_V2, k_VKQ_0 + k0, k_VKQ_sup - k0, nullptr);
-        }
+        flash_attn_tile_load_V<warp_size, nwarps, nbatch_V, DV, oob_check>
+            (V_h2, KV_tmp, stride_V2, k_VKQ_0 + k0, k_VKQ_sup - k0);
         __syncthreads();
 
 #ifdef FAST_FP16_AVAILABLE
