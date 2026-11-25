@@ -616,19 +616,23 @@ static __device__ __forceinline__ void flash_attn_tile_iter(
     for (int k0 = 0; k0 < nbatch_fa; k0 += nbatch_V) {
 #if defined(GCN5) && defined(__HIP_DEVICE_COMPILE__)
 #if __has_builtin(__builtin_amdgcn_raw_ptr_buffer_load_lds) && __has_builtin(__builtin_amdgcn_make_buffer_rsrc)
+        constexpr int warp_size_physical = ggml_cuda_get_physical_warp_size();
+        constexpr int nthreads = nwarps*warp_size;
         if constexpr (!oob_check && std::is_same_v<T_V, half2> && std::is_same_v<T_vec_dot, half2> &&
-                      DV % (2*warp_size) == 0 && nbatch_V % nwarps == 0) {
+                      DV % (2*warp_size_physical) == 0 && nthreads % warp_size_physical == 0 && nbatch_V*warp_size_physical % nthreads == 0) {
             using lds_ptr = void __attribute__((address_space(3))) *;
+            constexpr int nwarps_physical = nthreads / warp_size_physical;
+            const int tid = threadIdx.y*warp_size + threadIdx.x;
 
-            // The LDS destination is wave-uniform; the hardware adds the lane offset.
+            // The LDS destination is uniform across the physical wave, not the logical warp.
 #pragma unroll
-            for (int i0 = 0; i0 < nbatch_V; i0 += nwarps) {
-                const int i = i0 + threadIdx.y;
+            for (int i0 = 0; i0 < nbatch_V; i0 += nwarps_physical) {
+                const int i = i0 + tid/warp_size_physical;
                 const auto rsrc = __builtin_amdgcn_make_buffer_rsrc((void *) (V_h2 + int64_t(k_VKQ_0 + k0 + i)*stride_V2), 0, DV*sizeof(half), 0x00020000);
 #pragma unroll
-                for (int j0 = 0; j0 < DV/2; j0 += warp_size) {
+                for (int j0 = 0; j0 < DV/2; j0 += warp_size_physical) {
                     __builtin_amdgcn_raw_ptr_buffer_load_lds(rsrc, (lds_ptr) (KV_tmp + i*stride_tile_V + j0),
-                        sizeof(half2), (j0 + threadIdx.x)*sizeof(half2), 0, 0, 0);
+                        sizeof(half2), (j0 + tid % warp_size_physical)*sizeof(half2), 0, 0, 0);
                 }
             }
         } else
