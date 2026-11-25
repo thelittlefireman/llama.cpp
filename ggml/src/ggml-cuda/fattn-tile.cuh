@@ -614,8 +614,30 @@ static __device__ __forceinline__ void flash_attn_tile_iter(
     constexpr int stride_tile_V = std::is_same_v<T_vec_dot, half2> ? DV/2 : DV;
 #pragma unroll
     for (int k0 = 0; k0 < nbatch_fa; k0 += nbatch_V) {
-        flash_attn_load_tile<warp_size, nwarps, nbatch_V, DV, stride_tile_V, false, oob_check, false, false, false, T_V, T_vec_dot>
-            (V_h2, KV_tmp, DV/2, stride_V2, k_VKQ_0 + k0, k_VKQ_sup - k0, nullptr);
+#if defined(GCN5) && defined(__HIP_DEVICE_COMPILE__)
+#if __has_builtin(__builtin_amdgcn_raw_ptr_buffer_load_lds) && __has_builtin(__builtin_amdgcn_make_buffer_rsrc)
+        if constexpr (!oob_check && std::is_same_v<T_V, half2> && std::is_same_v<T_vec_dot, half2> &&
+                      DV % (2*warp_size) == 0 && nbatch_V % nwarps == 0) {
+            using lds_ptr = void __attribute__((address_space(3))) *;
+
+            // The LDS destination is wave-uniform; the hardware adds the lane offset.
+#pragma unroll
+            for (int i0 = 0; i0 < nbatch_V; i0 += nwarps) {
+                const int i = i0 + threadIdx.y;
+                const auto rsrc = __builtin_amdgcn_make_buffer_rsrc((void *) (V_h2 + int64_t(k_VKQ_0 + k0 + i)*stride_V2), 0, DV*sizeof(half), 0x00020000);
+#pragma unroll
+                for (int j0 = 0; j0 < DV/2; j0 += warp_size) {
+                    __builtin_amdgcn_raw_ptr_buffer_load_lds(rsrc, (lds_ptr) (KV_tmp + i*stride_tile_V + j0),
+                        sizeof(half2), (j0 + threadIdx.x)*sizeof(half2), 0, 0, 0);
+                }
+            }
+        } else
+#endif
+#endif
+        {
+            flash_attn_load_tile<warp_size, nwarps, nbatch_V, DV, stride_tile_V, false, oob_check, false, false, false, T_V, T_vec_dot>
+                (V_h2, KV_tmp, DV/2, stride_V2, k_VKQ_0 + k0, k_VKQ_sup - k0, nullptr);
+        }
         __syncthreads();
 
 #ifdef FAST_FP16_AVAILABLE
