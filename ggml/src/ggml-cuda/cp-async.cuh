@@ -77,3 +77,20 @@ static __device__ __forceinline__ void cp_async_wait_group() {
     NO_DEVICE_CODE;
 #endif // CP_ASYNC_AVAILABLE
 }
+
+#if defined(GGML_USE_HIP) && defined(__HIP_DEVICE_COMPILE__) && defined(GCN5)
+#if __has_builtin(__builtin_amdgcn_make_buffer_rsrc) && __has_builtin(__builtin_amdgcn_raw_ptr_buffer_load_lds)
+#define GCN_BUFFER_TO_LDS_AVAILABLE
+
+static __device__ __forceinline__ auto cp_async_buffer_rsrc(const void * src, uint32_t size) {
+    return __builtin_amdgcn_make_buffer_rsrc((void *) src, 0, size, 0x00020000);
+}
+
+// One dword per lane. The LDS base must be uniform across the physical wave.
+template <int offset = 0, typename T_rsrc>
+static __device__ __forceinline__ void cp_async_buffer_to_lds(T_rsrc rsrc, void * dst, uint32_t voffset, uint32_t soffset) {
+    using lds_ptr = void __attribute__((address_space(3))) *;
+    __builtin_amdgcn_raw_ptr_buffer_load_lds(rsrc, (lds_ptr) dst, 4, voffset, soffset, offset, 0);
+}
+#endif
+#endif
